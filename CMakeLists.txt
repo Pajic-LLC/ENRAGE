@@ -9,6 +9,7 @@ target_include_directories(enrage_sdk INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/incl
 
 add_library(enrage_core STATIC
     src/core/archive.cpp
+    src/core/build_catalog.cpp
     src/core/manifest.cpp
     src/core/mod_graph.cpp
     src/core/mod_registry.cpp
@@ -17,6 +18,7 @@ add_library(enrage_core STATIC
     src/core/plugin_host.cpp
     src/core/runtime.cpp
     src/platform/dynamic_library.cpp
+    src/platform/fingerprint.cpp
     src/platform/signature/pattern.cpp
     src/platform/signature/resolver.cpp
     src/adapters/null_adapter.cpp
