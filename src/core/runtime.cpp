@@ -44,9 +44,12 @@ bool Runtime::start() {
 
     loaded_mods_.clear();
     diagnostics_.clear();
+    load_order_.clear();
     overlay_.clear();
     plugins_.unload_all();
     plugins_.set_capabilities(adapter_->capabilities());
+    package_set_valid_ = false;
+    extensions_active_ = false;
 
     mods_.discover();
     auto packages = PackageLoader::load(mods_, mods_.root().parent_path() / ".enrage");
@@ -59,7 +62,7 @@ bool Runtime::start() {
         specs.push_back(mod.manifest.to_spec());
     }
 
-    const auto resolution = ModGraph::resolve(specs);
+    auto resolution = ModGraph::resolve(specs);
     for (const auto& issue : resolution.issues) {
         diagnostics_.push_back({
             DiagnosticSeverity::error,
@@ -70,40 +73,13 @@ bool Runtime::start() {
         });
     }
 
-    if (resolution.ok()) {
-        for (std::size_t index = 0; index < resolution.order.size(); ++index) {
-            const auto& id = resolution.order[index];
-            const auto found = std::ranges::find(loaded_mods_, id, [](const LoadedMod& mod) {
-                return mod.manifest.id;
-            });
-            if (found == loaded_mods_.end()) continue;
-
-            if (!found->content_root.empty() && !overlay_.mount({id, found->content_root, static_cast<int>(index)})) {
-                diagnostics_.push_back({
-                    DiagnosticSeverity::error,
-                    DiagnosticCode::mount_failed,
-                    found->source,
-                    id,
-                    "failed to mount mod content",
-                });
-                continue;
-            }
-
-            for (const auto& plugin : found->native_plugins) {
-                if (!plugins_.load(plugin)) {
-                    diagnostics_.push_back({
-                        DiagnosticSeverity::error,
-                        DiagnosticCode::plugin_load_failed,
-                        found->source,
-                        id,
-                        "failed to load native plugin: " + plugin.filename().string(),
-                    });
-                }
-            }
-        }
-    }
-
+    package_set_valid_ = resolution.ok();
+    load_order_ = std::move(resolution.order);
     running_ = true;
+
+    if (adapter_->environment_state() == adapters::EnvironmentState::local) {
+        activate_extensions();
+    }
     return true;
 }
 
@@ -112,20 +88,29 @@ void Runtime::stop() noexcept {
         return;
     }
 
-    plugins_.unload_all();
-    overlay_.clear();
+    deactivate_extensions();
     adapter_->shutdown();
     running_ = false;
 }
 
 void Runtime::tick(double delta_seconds) {
-    if (running_) {
-        plugins_.tick(delta_seconds);
+    if (!running_) return;
+
+    if (adapter_->environment_state() == adapters::EnvironmentState::local) {
+        if (!extensions_active_) activate_extensions();
+        if (extensions_active_) plugins_.tick(delta_seconds);
+        return;
     }
+
+    if (extensions_active_) deactivate_extensions();
 }
 
 bool Runtime::running() const noexcept {
     return running_;
+}
+
+bool Runtime::extensions_active() const noexcept {
+    return extensions_active_;
 }
 
 const ModRegistry& Runtime::mods() const noexcept {
@@ -150,6 +135,48 @@ const PluginHost& Runtime::plugins() const noexcept {
 
 const adapters::Adapter& Runtime::adapter() const noexcept {
     return *adapter_;
+}
+
+void Runtime::activate_extensions() {
+    if (extensions_active_ || !package_set_valid_) return;
+
+    for (std::size_t index = 0; index < load_order_.size(); ++index) {
+        const auto& id = load_order_[index];
+        const auto found = std::ranges::find(loaded_mods_, id, [](const LoadedMod& mod) {
+            return mod.manifest.id;
+        });
+        if (found == loaded_mods_.end()) continue;
+
+        if (!found->content_root.empty() && !overlay_.mount({id, found->content_root, static_cast<int>(index)})) {
+            diagnostics_.push_back({
+                DiagnosticSeverity::error,
+                DiagnosticCode::mount_failed,
+                found->source,
+                id,
+                "failed to mount mod content",
+            });
+        }
+
+        for (const auto& plugin : found->native_plugins) {
+            if (!plugins_.load(plugin)) {
+                diagnostics_.push_back({
+                    DiagnosticSeverity::error,
+                    DiagnosticCode::plugin_load_failed,
+                    found->source,
+                    id,
+                    "failed to load native plugin: " + plugin.filename().string(),
+                });
+            }
+        }
+    }
+
+    extensions_active_ = true;
+}
+
+void Runtime::deactivate_extensions() noexcept {
+    plugins_.unload_all();
+    overlay_.clear();
+    extensions_active_ = false;
 }
 
 } // namespace enrage::core
