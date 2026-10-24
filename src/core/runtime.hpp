@@ -9,6 +9,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,6 +37,7 @@ public:
     [[nodiscard]] const Overlay& overlay() const noexcept;
     [[nodiscard]] const PluginHost& plugins() const noexcept;
     [[nodiscard]] const std::vector<std::string>& quarantined_mods() const noexcept;
+    [[nodiscard]] const std::optional<RecoveryBreadcrumb>& suspected_execution() const noexcept;
     [[nodiscard]] const adapters::Adapter& adapter() const noexcept;
 
     bool clear_quarantine(std::string_view mod_id);
@@ -44,6 +46,7 @@ public:
 private:
     void activate_extensions();
     void deactivate_extensions() noexcept;
+    void report_recovery_state_error(std::string message);
 
     std::unique_ptr<adapters::Adapter> adapter_;
     ModRegistry mods_;
@@ -57,6 +60,7 @@ private:
     bool package_set_valid_{};
     bool conflicts_reported_{};
     bool extensions_active_{};
+    bool recovery_state_error_reported_{};
     bool running_{};
 };
 
