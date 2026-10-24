@@ -21,6 +21,7 @@ add_library(enrage_core STATIC
     src/core/profile_authoring.cpp
     src/core/profile_matrix.cpp
     src/core/profile_propagation.cpp
+    src/core/profile_support.cpp
     src/core/recovery.cpp
     src/core/runtime.cpp
     src/platform/dynamic_library.cpp
@@ -57,7 +58,7 @@ add_executable(enrage_inspect src/tools/inspect_main.cpp)
 target_include_directories(enrage_inspect PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(enrage_inspect PRIVATE enrage_core)
 
-add_executable(enrage_profile src/tools/profile_main.cpp)
+add_executable(enrage_profile src/tools/profile_cli.cpp)
 target_include_directories(enrage_profile PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(enrage_profile PRIVATE enrage_core)
 
