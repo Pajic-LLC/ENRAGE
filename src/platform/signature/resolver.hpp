@@ -27,6 +27,7 @@ struct SignatureCandidate {
 struct SymbolSpec {
     std::string name;
     std::vector<SignatureCandidate> candidates;
+    std::string region;
 };
 
 struct SymbolResolution {
@@ -43,6 +44,7 @@ public:
         std::string_view name,
         std::span<const std::byte> bytes) const;
 
+    [[nodiscard]] const SymbolSpec* spec(std::string_view name) const noexcept;
     [[nodiscard]] std::size_t symbol_count() const noexcept;
 
 private:
