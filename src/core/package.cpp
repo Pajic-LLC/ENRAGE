@@ -59,6 +59,36 @@ void push_manifest_error(
     });
 }
 
+bool compatible_manifest(
+    PackageLoadResult& result,
+    const std::filesystem::path& source,
+    const ModManifest& manifest) {
+    if (manifest.manifest_version != manifest_format_version) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::error,
+            DiagnosticCode::manifest_version_unsupported,
+            source,
+            manifest.id,
+            "unsupported manifest version " + std::to_string(manifest.manifest_version),
+        });
+        return false;
+    }
+
+    if (manifest.runtime_abi != ENRAGE_ABI_VERSION) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::error,
+            DiagnosticCode::runtime_abi_mismatch,
+            source,
+            manifest.id,
+            "package requires runtime ABI " + std::to_string(manifest.runtime_abi) +
+                ", host ABI is " + std::to_string(ENRAGE_ABI_VERSION),
+        });
+        return false;
+    }
+
+    return true;
+}
+
 void finalize_mod(PackageLoadResult& result, LoadedMod mod) {
     const auto content_relative = std::filesystem::path(mod.manifest.content_root);
     if (!safe_relative(content_relative)) {
@@ -148,6 +178,7 @@ PackageLoadResult PackageLoader::load(
                 push_manifest_error(result, candidate.path, parsed);
                 continue;
             }
+            if (!compatible_manifest(result, candidate.path, *parsed.manifest)) continue;
 
             LoadedMod mod;
             mod.kind = PackageKind::directory;
@@ -187,6 +218,7 @@ PackageLoadResult PackageLoader::load(
             push_manifest_error(result, candidate.path, parsed);
             continue;
         }
+        if (!compatible_manifest(result, candidate.path, *parsed.manifest)) continue;
 
         const auto extracted_root = cache_root / cache_key(candidate.path);
         std::filesystem::remove_all(extracted_root, error);
