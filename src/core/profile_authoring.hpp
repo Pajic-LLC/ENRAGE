@@ -65,7 +65,9 @@ struct AuthoringOptions {
     std::uint64_t capabilities = 0,
     AuthoringOptions options = {});
 
+// Legacy serializer remains available while v1 profiles are migrated.
 [[nodiscard]] std::string profile_draft_json(const ProfileDraft& profile);
+[[nodiscard]] std::string serialize_profile_draft(const ProfileDraft& profile);
 
 struct ValidationSymbol {
     std::string name;
@@ -98,6 +100,10 @@ struct ValidationReport {
 };
 
 [[nodiscard]] ValidationReport validate_profile_set(
+    const std::filesystem::path& profile_directory,
+    const std::filesystem::path& image_directory);
+
+[[nodiscard]] ValidationReport validate_profile_set_strict(
     const std::filesystem::path& profile_directory,
     const std::filesystem::path& image_directory);
 
