@@ -3,6 +3,7 @@
 #include "core/build_profile_io.hpp"
 #include "platform/fingerprint.hpp"
 #include "platform/pe_image.hpp"
+#include "platform/scan_image.hpp"
 
 #include <cstddef>
 #include <fstream>
@@ -108,6 +109,7 @@ std::optional<InspectionReport> inspect_executable(
     report.file_size = fingerprint->size;
 
     const auto pe = platform::PeImage::parse(*bytes);
+    const auto scan_image = platform::ScanImage::from_file(*bytes);
     if (pe) {
         report.pe_valid = true;
         report.pe32_plus = pe->pe32_plus();
@@ -155,9 +157,27 @@ std::optional<InspectionReport> inspect_executable(
     report.symbols.reserve(profile->symbols.size());
     const std::span<const std::byte> image_bytes{*bytes};
     for (const auto& spec : profile->symbols) {
-        const auto resolution = resolver->resolve(spec.name, image_bytes);
         InspectionSymbol symbol;
         symbol.name = spec.name;
+
+        if (!spec.region.empty()) {
+            if (!scan_image) {
+                symbol.state = platform::signature::ResolutionState::not_found;
+                report.symbols.push_back(std::move(symbol));
+                continue;
+            }
+            const auto resolution = platform::resolve_in_image(*resolver, spec.name, *scan_image);
+            symbol.state = resolution.state;
+            symbol.match_count = resolution.match_count;
+            symbol.file_offset = resolution.storage_offset;
+            symbol.rva = resolution.rva;
+            symbol.virtual_address = resolution.virtual_address;
+            symbol.section = resolution.region;
+            report.symbols.push_back(std::move(symbol));
+            continue;
+        }
+
+        const auto resolution = resolver->resolve(spec.name, image_bytes);
         symbol.state = resolution.state;
         symbol.match_count = resolution.match_count;
         symbol.file_offset = resolution.offset;
