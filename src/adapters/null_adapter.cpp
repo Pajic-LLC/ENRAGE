@@ -1,5 +1,7 @@
 #include "adapters/null_adapter.hpp"
 
+#include "enrage/sdk.h"
+
 namespace enrage::adapters {
 
 std::string_view NullAdapter::name() const noexcept {
@@ -15,7 +17,7 @@ BuildIdentity NullAdapter::build() const {
 }
 
 std::uint64_t NullAdapter::capabilities() const noexcept {
-    return 0;
+    return ENRAGE_CAPABILITY_TICK | ENRAGE_CAPABILITY_VIRTUAL_FILES;
 }
 
 bool NullAdapter::initialize() {
