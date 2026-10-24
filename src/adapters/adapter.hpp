@@ -11,6 +11,12 @@ struct BuildIdentity {
     std::uint64_t fingerprint{};
 };
 
+enum class EnvironmentState {
+    unknown,
+    local,
+    restricted,
+};
+
 class Adapter {
 public:
     virtual ~Adapter() = default;
@@ -19,6 +25,7 @@ public:
     [[nodiscard]] virtual bool probe() = 0;
     [[nodiscard]] virtual BuildIdentity build() const = 0;
     [[nodiscard]] virtual std::uint64_t capabilities() const noexcept = 0;
+    [[nodiscard]] virtual EnvironmentState environment_state() const noexcept = 0;
 
     virtual bool initialize() = 0;
     virtual void shutdown() noexcept = 0;
