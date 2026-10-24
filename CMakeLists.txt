@@ -26,6 +26,7 @@ add_library(enrage_core STATIC
     src/platform/dynamic_library.cpp
     src/platform/fingerprint.cpp
     src/platform/pe_image.cpp
+    src/platform/scan_image.cpp
     src/platform/signature/pattern.cpp
     src/platform/signature/resolver.cpp
     src/adapters/null_adapter.cpp
@@ -130,6 +131,11 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_profile_propagation_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_profile_propagation_tests)
 
+    add_executable(enrage_scan_image_tests tests/scan_image_tests.cpp)
+    target_include_directories(enrage_scan_image_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_scan_image_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_scan_image_tests)
+
     add_test(NAME enrage_tests COMMAND enrage_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_fingerprint_tests COMMAND enrage_fingerprint_tests)
     add_test(NAME enrage_pe_tests COMMAND enrage_pe_tests)
@@ -141,4 +147,5 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_profile_authoring_tests COMMAND enrage_profile_authoring_tests)
     add_test(NAME enrage_profile_matrix_tests COMMAND enrage_profile_matrix_tests)
     add_test(NAME enrage_profile_propagation_tests COMMAND enrage_profile_propagation_tests)
+    add_test(NAME enrage_scan_image_tests COMMAND enrage_scan_image_tests)
 endif()
