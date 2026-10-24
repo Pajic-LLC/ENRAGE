@@ -1,5 +1,6 @@
 #include "core/profile_authoring.hpp"
 #include "core/profile_matrix.hpp"
+#include "core/profile_propagation.hpp"
 
 #include <charconv>
 #include <cstdint>
@@ -86,6 +87,8 @@ void usage() {
         << "  enrage_profile draft <reference> <target> --id <profile-id>\n"
         << "      --symbol <name>@<file-offset> [--symbol ...]\n"
         << "      [--capabilities <bits>] [--output <profile.enp>]\n"
+        << "  enrage_profile propagate <reference> <target> --profile <known.enp>\n"
+        << "      --id <profile-id> [--output <profile.enp>]\n"
         << "  enrage_profile validate --profiles <directory> --images <directory>\n"
         << "      [--output <report.json>]\n"
         << "  enrage_profile matrix --profiles <directory> --images <directory>\n"
@@ -158,6 +161,62 @@ int draft_command(int argc, char** argv) {
     return 0;
 }
 
+int propagate_command(int argc, char** argv) {
+    if (argc < 7) {
+        usage();
+        return 2;
+    }
+
+    const std::filesystem::path reference = argv[2];
+    const std::filesystem::path target = argv[3];
+    std::optional<std::filesystem::path> profile;
+    std::optional<std::filesystem::path> output;
+    std::string id;
+
+    for (int i = 4; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--profile") {
+            if (++i >= argc) return 2;
+            profile = std::filesystem::path{argv[i]};
+        } else if (arg == "--id") {
+            if (++i >= argc) return 2;
+            id = argv[i];
+        } else if (arg == "--output") {
+            if (++i >= argc) return 2;
+            output = std::filesystem::path{argv[i]};
+        } else {
+            usage();
+            return 2;
+        }
+    }
+
+    if (!profile || id.empty()) {
+        usage();
+        return 2;
+    }
+
+    const auto result = enrage::core::propagate_profile(reference, target, *profile, id);
+    if (!result.ok()) {
+        for (const auto& error : result.errors) {
+            if (!error.symbol.empty()) std::cerr << error.symbol << ": ";
+            std::cerr << error.message << '\n';
+        }
+        return 3;
+    }
+
+    for (const auto& symbol : result.profile->symbols) {
+        std::cerr << symbol.name << ": 0x" << std::hex << symbol.reference_offset
+                  << " -> 0x" << symbol.target_offset << std::dec
+                  << "  similarity=" << symbol.similarity << '\n';
+    }
+
+    if (!write_output(output, enrage::core::profile_draft_json(*result.profile))) {
+        std::cerr << "failed to write propagated profile\n";
+        return 4;
+    }
+    return 0;
+}
+
 int validate_command(int argc, char** argv) {
     const auto options = directory_options(argc, argv);
     if (!options) {
@@ -206,6 +265,7 @@ int main(int argc, char** argv) {
     }
     const std::string_view command = argv[1];
     if (command == "draft") return draft_command(argc, argv);
+    if (command == "propagate") return propagate_command(argc, argv);
     if (command == "validate") return validate_command(argc, argv);
     if (command == "matrix") return matrix_command(argc, argv);
     usage();
