@@ -1,6 +1,7 @@
 #include "platform/scan_image.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <set>
 #include <utility>
 
