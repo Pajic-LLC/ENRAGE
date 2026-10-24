@@ -24,6 +24,8 @@ enum class DiagnosticCode {
     missing_content_root,
     missing_plugin,
     dependency_error,
+    mount_failed,
+    plugin_load_failed,
 };
 
 struct Diagnostic {
