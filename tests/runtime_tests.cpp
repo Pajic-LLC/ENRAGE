@@ -1,4 +1,5 @@
 #include "adapters/null_adapter.hpp"
+#include "core/mod_graph.hpp"
 #include "core/mod_registry.hpp"
 #include "core/overlay.hpp"
 #include "core/plugin_host.hpp"
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <vector>
 
 namespace {
 
@@ -44,6 +46,44 @@ void registry_discovers_directories_and_packages() {
     assert(registry.candidates()[1].packaged);
 
     std::filesystem::remove_all(root);
+}
+
+void mod_graph_resolves_dependencies_and_order_hints() {
+    const std::vector<enrage::core::ModSpec> mods{
+        {.id = "visuals", .priority = 20, .dependencies = {"core"}},
+        {.id = "traffic", .priority = 5, .load_after = {"visuals"}},
+        {.id = "core", .priority = 0},
+    };
+
+    const auto resolution = enrage::core::ModGraph::resolve(mods);
+    assert(resolution.ok());
+    assert((resolution.order == std::vector<std::string>{"core", "visuals", "traffic"}));
+}
+
+void mod_graph_reports_invalid_sets() {
+    const std::vector<enrage::core::ModSpec> missing{
+        {.id = "alpha", .dependencies = {"missing"}},
+    };
+    const auto missing_result = enrage::core::ModGraph::resolve(missing);
+    assert(!missing_result.ok());
+    assert(missing_result.issues[0].kind == enrage::core::ModIssueKind::missing_dependency);
+
+    const std::vector<enrage::core::ModSpec> conflicting{
+        {.id = "alpha", .conflicts = {"beta"}},
+        {.id = "beta", .conflicts = {"alpha"}},
+    };
+    const auto conflict_result = enrage::core::ModGraph::resolve(conflicting);
+    assert(!conflict_result.ok());
+    assert(conflict_result.issues.size() == 1);
+    assert(conflict_result.issues[0].kind == enrage::core::ModIssueKind::conflict);
+
+    const std::vector<enrage::core::ModSpec> cyclic{
+        {.id = "alpha", .load_after = {"beta"}},
+        {.id = "beta", .load_after = {"alpha"}},
+    };
+    const auto cycle_result = enrage::core::ModGraph::resolve(cyclic);
+    assert(!cycle_result.ok());
+    assert(cycle_result.order.empty());
 }
 
 void overlay_prefers_highest_priority_and_rejects_traversal() {
@@ -114,6 +154,8 @@ int main(int argc, char** argv) {
 
     pattern_scanner_supports_wildcards();
     registry_discovers_directories_and_packages();
+    mod_graph_resolves_dependencies_and_order_hints();
+    mod_graph_reports_invalid_sets();
     overlay_prefers_highest_priority_and_rejects_traversal();
     plugin_host_loads_c_abi_plugin(argv[1]);
     runtime_lifecycle_is_idempotent();

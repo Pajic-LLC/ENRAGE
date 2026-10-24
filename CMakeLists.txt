@@ -8,6 +8,7 @@ add_library(enrage_sdk INTERFACE)
 target_include_directories(enrage_sdk INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_library(enrage_core STATIC
+    src/core/mod_graph.cpp
     src/core/mod_registry.cpp
     src/core/overlay.cpp
     src/core/plugin_host.cpp
