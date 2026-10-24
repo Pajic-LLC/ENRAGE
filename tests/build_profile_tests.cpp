@@ -35,6 +35,7 @@ void parses_strict_profile_and_builds_resolver() {
     assert(parsed.profile->fingerprint.hex() == kSha);
     assert(parsed.profile->capabilities == 5);
     assert(parsed.profile->symbols.size() == 1);
+    assert(parsed.profile->symbols[0].region.empty());
 
     enrage::core::BuildCatalog catalog;
     assert(catalog.add(*parsed.profile));
@@ -50,6 +51,28 @@ void parses_strict_profile_and_builds_resolver() {
     assert(resolved.offset == 1);
 }
 
+void parses_v2_symbol_region() {
+    const auto parsed = enrage::core::parse_build_profile(
+        "{\"version\":2,\"id\":\"example.v2\","
+        "\"fingerprint\":{\"sha256\":\"" + std::string(kSha) + "\",\"size\":4096},"
+        "\"capabilities\":5,\"symbols\":[{"
+        "\"name\":\"ExampleSymbol\",\"region\":\".text\","
+        "\"candidates\":[{\"pattern\":\"48 8B ?? 89\",\"adjustment\":0}]}]}"
+    );
+    assert(parsed.ok());
+    assert(parsed.profile->symbols.size() == 1);
+    assert(parsed.profile->symbols[0].region == ".text");
+
+    const auto legacy_with_region = enrage::core::parse_build_profile(
+        "{\"version\":1,\"id\":\"legacy.region\","
+        "\"fingerprint\":{\"sha256\":\"" + std::string(kSha) + "\",\"size\":4096},"
+        "\"capabilities\":0,\"symbols\":[{"
+        "\"name\":\"ExampleSymbol\",\"region\":\".text\","
+        "\"candidates\":[{\"pattern\":\"48 8B ?? 89\",\"adjustment\":0}]}]}"
+    );
+    assert(!legacy_with_region.ok());
+}
+
 void rejects_malformed_or_forward_unknown_profiles() {
     auto bad_sha = profile_json("bad.sha", "xyz");
     assert(!enrage::core::parse_build_profile(bad_sha).ok());
@@ -60,7 +83,7 @@ void rejects_malformed_or_forward_unknown_profiles() {
     assert(!unknown.ok());
 
     const auto future = enrage::core::parse_build_profile(
-        "{\"version\":2,\"id\":\"x\",\"fingerprint\":{\"sha256\":\"" +
+        "{\"version\":3,\"id\":\"x\",\"fingerprint\":{\"sha256\":\"" +
         std::string(kSha) + "\",\"size\":1},\"capabilities\":0,\"symbols\":[]}");
     assert(!future.ok());
 }
@@ -93,6 +116,7 @@ void imports_enp_directory_deterministically() {
 
 int main() {
     parses_strict_profile_and_builds_resolver();
+    parses_v2_symbol_region();
     rejects_malformed_or_forward_unknown_profiles();
     imports_enp_directory_deterministically();
     return 0;
