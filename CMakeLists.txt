@@ -20,6 +20,7 @@ add_library(enrage_core STATIC
     src/core/plugin_host.cpp
     src/core/profile_authoring.cpp
     src/core/profile_matrix.cpp
+    src/core/profile_propagation.cpp
     src/core/recovery.cpp
     src/core/runtime.cpp
     src/platform/dynamic_library.cpp
@@ -124,6 +125,11 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_profile_matrix_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_profile_matrix_tests)
 
+    add_executable(enrage_profile_propagation_tests tests/profile_propagation_tests.cpp)
+    target_include_directories(enrage_profile_propagation_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_profile_propagation_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_profile_propagation_tests)
+
     add_test(NAME enrage_tests COMMAND enrage_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_fingerprint_tests COMMAND enrage_fingerprint_tests)
     add_test(NAME enrage_pe_tests COMMAND enrage_pe_tests)
@@ -134,4 +140,5 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_inspection_tests COMMAND enrage_inspection_tests)
     add_test(NAME enrage_profile_authoring_tests COMMAND enrage_profile_authoring_tests)
     add_test(NAME enrage_profile_matrix_tests COMMAND enrage_profile_matrix_tests)
+    add_test(NAME enrage_profile_propagation_tests COMMAND enrage_profile_propagation_tests)
 endif()
