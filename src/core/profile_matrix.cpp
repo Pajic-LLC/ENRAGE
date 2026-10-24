@@ -2,6 +2,7 @@
 
 #include "core/build_profile_io.hpp"
 #include "platform/fingerprint.hpp"
+#include "platform/scan_image.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -83,6 +84,20 @@ struct ImageData {
     std::vector<std::byte> bytes;
 };
 
+platform::ImageResolution resolve_scoped(
+    const platform::signature::SymbolSpec& symbol,
+    const platform::signature::Resolver& resolver,
+    const std::vector<std::byte>& bytes) {
+    const auto image = platform::ScanImage::from_file(bytes);
+    if (!image) {
+        return {
+            .state = platform::signature::ResolutionState::not_found,
+            .match_count = 0,
+        };
+    }
+    return platform::resolve_in_image(resolver, symbol.name, *image);
+}
+
 } // namespace
 
 bool ProfileMatrixReport::ok() const noexcept {
@@ -157,13 +172,25 @@ ProfileMatrixReport build_profile_matrix(
             };
             row.cells.reserve(images.size());
             for (const auto& image : images) {
-                const auto resolution = resolver.resolve(symbol.name, image.bytes);
+                if (symbol.region.empty()) {
+                    const auto resolution = resolver.resolve(symbol.name, image.bytes);
+                    row.cells.push_back({
+                        .image = image.path,
+                        .expected = image.fingerprint == profile.fingerprint,
+                        .state = resolution.state,
+                        .match_count = resolution.match_count,
+                        .offset = resolution.offset,
+                    });
+                    continue;
+                }
+
+                const auto resolution = resolve_scoped(symbol, resolver, image.bytes);
                 row.cells.push_back({
                     .image = image.path,
                     .expected = image.fingerprint == profile.fingerprint,
                     .state = resolution.state,
                     .match_count = resolution.match_count,
-                    .offset = resolution.offset,
+                    .offset = resolution.storage_offset,
                 });
             }
             report.rows.push_back(std::move(row));
