@@ -73,11 +73,16 @@ public:
         skip_ws();
         if (pos_ != input_.size()) return fail("trailing data");
         if (!have_version) return fail("version is required");
-        if (version != 1) return fail("unsupported profile version");
+        if (version != 1 && version != 2) return fail("unsupported profile version");
         if (!have_id) return fail("id is required");
         if (!have_fingerprint) return fail("fingerprint is required");
         if (!have_capabilities) return fail("capabilities is required");
         if (!have_symbols) return fail("symbols is required");
+        if (version == 1 && std::ranges::any_of(profile.symbols, [](const auto& symbol) {
+                return !symbol.region.empty();
+            })) {
+            return fail("symbol region requires profile version 2");
+        }
 
         return {.profile = std::move(profile)};
     }
@@ -349,6 +354,7 @@ private:
             platform::signature::SymbolSpec symbol;
             bool have_name = false;
             bool have_candidates = false;
+            bool have_region = false;
 
             if (object_end()) {
                 last_error_ = "symbol is empty";
@@ -381,6 +387,18 @@ private:
                     }
                     if (!candidates(symbol.candidates)) return false;
                     have_candidates = true;
+                } else if (*key == "region") {
+                    if (have_region) {
+                        last_error_ = "duplicate symbol region";
+                        return false;
+                    }
+                    auto value = string();
+                    if (!value || value->empty()) {
+                        last_error_ = "symbol region must be non-empty";
+                        return false;
+                    }
+                    symbol.region = std::move(*value);
+                    have_region = true;
                 } else {
                     last_error_ = "unknown symbol field: " + *key;
                     return false;
