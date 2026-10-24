@@ -30,6 +30,7 @@ add_library(enrage_core STATIC
     src/platform/scan_image.cpp
     src/platform/signature/pattern.cpp
     src/platform/signature/resolver.cpp
+    src/adapters/lab_adapter.cpp
     src/adapters/null_adapter.cpp
 )
 
@@ -155,6 +156,11 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_scan_image_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_scan_image_tests)
 
+    add_executable(enrage_lab_adapter_tests tests/lab_adapter_tests.cpp)
+    target_include_directories(enrage_lab_adapter_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_lab_adapter_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_lab_adapter_tests)
+
     add_executable(enrage_plugin_execution_tests tests/plugin_execution_tests.cpp)
     target_include_directories(enrage_plugin_execution_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_plugin_execution_tests PRIVATE enrage_core)
@@ -179,6 +185,7 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_profile_propagation_tests COMMAND enrage_profile_propagation_tests)
     add_test(NAME enrage_profile_support_tests COMMAND enrage_profile_support_tests)
     add_test(NAME enrage_scan_image_tests COMMAND enrage_scan_image_tests)
+    add_test(NAME enrage_lab_adapter_tests COMMAND enrage_lab_adapter_tests)
     add_test(NAME enrage_plugin_execution_tests
         COMMAND enrage_plugin_execution_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_process_recovery_tests
