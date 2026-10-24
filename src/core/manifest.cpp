@@ -27,7 +27,15 @@ public:
             if (!consume(':')) return fail("expected ':'");
             skip_ws();
 
-            if (*key == "id") {
+            if (*key == "manifestVersion") {
+                auto value = integer();
+                if (!value || *value <= 0) return fail("manifestVersion must be a positive integer");
+                manifest.manifest_version = static_cast<std::uint32_t>(*value);
+            } else if (*key == "runtimeAbi") {
+                auto value = integer();
+                if (!value || *value <= 0) return fail("runtimeAbi must be a positive integer");
+                manifest.runtime_abi = static_cast<std::uint32_t>(*value);
+            } else if (*key == "id") {
                 auto value = string();
                 if (!value) return fail("id must be a string");
                 manifest.id = std::move(*value);
