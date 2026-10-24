@@ -1,7 +1,9 @@
 #pragma once
 
 #include "core/mod_graph.hpp"
+#include "enrage/sdk.h"
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -9,7 +11,11 @@
 
 namespace enrage::core {
 
+inline constexpr std::uint32_t manifest_format_version = 1;
+
 struct ModManifest {
+    std::uint32_t manifest_version{manifest_format_version};
+    std::uint32_t runtime_abi{ENRAGE_ABI_VERSION};
     std::string id;
     std::string name;
     std::string version;
