@@ -76,6 +76,14 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_test_plugin PRIVATE enrage_sdk)
     set_target_properties(enrage_test_plugin PROPERTIES PREFIX "")
 
+    add_library(enrage_fault_plugin MODULE tests/fault_plugin.cpp)
+    target_link_libraries(enrage_fault_plugin PRIVATE enrage_sdk)
+    set_target_properties(enrage_fault_plugin PROPERTIES PREFIX "")
+
+    add_executable(enrage_crash_probe tests/crash_probe.cpp)
+    target_include_directories(enrage_crash_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_crash_probe PRIVATE enrage_core)
+
     add_executable(enrage_tests tests/runtime_tests.cpp)
     target_include_directories(enrage_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_tests PRIVATE enrage_core)
@@ -136,6 +144,16 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_scan_image_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_scan_image_tests)
 
+    add_executable(enrage_plugin_execution_tests tests/plugin_execution_tests.cpp)
+    target_include_directories(enrage_plugin_execution_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_plugin_execution_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_plugin_execution_tests)
+
+    add_executable(enrage_process_recovery_tests tests/process_recovery_tests.cpp)
+    target_include_directories(enrage_process_recovery_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_process_recovery_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_process_recovery_tests)
+
     add_test(NAME enrage_tests COMMAND enrage_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_fingerprint_tests COMMAND enrage_fingerprint_tests)
     add_test(NAME enrage_pe_tests COMMAND enrage_pe_tests)
@@ -148,4 +166,10 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_profile_matrix_tests COMMAND enrage_profile_matrix_tests)
     add_test(NAME enrage_profile_propagation_tests COMMAND enrage_profile_propagation_tests)
     add_test(NAME enrage_scan_image_tests COMMAND enrage_scan_image_tests)
+    add_test(NAME enrage_plugin_execution_tests
+        COMMAND enrage_plugin_execution_tests $<TARGET_FILE:enrage_test_plugin>)
+    add_test(NAME enrage_process_recovery_tests
+        COMMAND enrage_process_recovery_tests
+            $<TARGET_FILE:enrage_crash_probe>
+            $<TARGET_FILE:enrage_fault_plugin>)
 endif()
