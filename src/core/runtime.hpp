@@ -46,6 +46,7 @@ private:
     Overlay overlay_;
     PluginHost plugins_;
     bool package_set_valid_{};
+    bool conflicts_reported_{};
     bool extensions_active_{};
     bool running_{};
 };
