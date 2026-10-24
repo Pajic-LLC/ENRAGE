@@ -18,6 +18,8 @@ enum class DiagnosticSeverity {
 enum class DiagnosticCode {
     manifest_missing,
     manifest_invalid,
+    manifest_version_unsupported,
+    runtime_abi_mismatch,
     archive_invalid,
     archive_extract_failed,
     unsafe_path,
