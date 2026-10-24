@@ -1,4 +1,5 @@
 #include "core/profile_authoring.hpp"
+#include "core/profile_matrix.hpp"
 
 #include <charconv>
 #include <cstdint>
@@ -52,6 +53,33 @@ bool write_output(const std::optional<std::filesystem::path>& path, std::string_
     return static_cast<bool>(output);
 }
 
+struct DirectoryOptions {
+    std::optional<std::filesystem::path> profiles;
+    std::optional<std::filesystem::path> images;
+    std::optional<std::filesystem::path> output;
+};
+
+std::optional<DirectoryOptions> directory_options(int argc, char** argv) {
+    DirectoryOptions options;
+    for (int i = 2; i < argc; ++i) {
+        const std::string_view arg = argv[i];
+        if (arg == "--profiles") {
+            if (++i >= argc) return std::nullopt;
+            options.profiles = std::filesystem::path{argv[i]};
+        } else if (arg == "--images") {
+            if (++i >= argc) return std::nullopt;
+            options.images = std::filesystem::path{argv[i]};
+        } else if (arg == "--output") {
+            if (++i >= argc) return std::nullopt;
+            options.output = std::filesystem::path{argv[i]};
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (!options.profiles || !options.images) return std::nullopt;
+    return options;
+}
+
 void usage() {
     std::cerr
         << "usage:\n"
@@ -59,7 +87,9 @@ void usage() {
         << "      --symbol <name>@<file-offset> [--symbol ...]\n"
         << "      [--capabilities <bits>] [--output <profile.enp>]\n"
         << "  enrage_profile validate --profiles <directory> --images <directory>\n"
-        << "      [--output <report.json>]\n";
+        << "      [--output <report.json>]\n"
+        << "  enrage_profile matrix --profiles <directory> --images <directory>\n"
+        << "      [--output <matrix.json>]\n";
 }
 
 int draft_command(int argc, char** argv) {
@@ -129,34 +159,14 @@ int draft_command(int argc, char** argv) {
 }
 
 int validate_command(int argc, char** argv) {
-    std::optional<std::filesystem::path> profiles;
-    std::optional<std::filesystem::path> images;
-    std::optional<std::filesystem::path> output;
-
-    for (int i = 2; i < argc; ++i) {
-        const std::string_view arg = argv[i];
-        if (arg == "--profiles") {
-            if (++i >= argc) return 2;
-            profiles = std::filesystem::path{argv[i]};
-        } else if (arg == "--images") {
-            if (++i >= argc) return 2;
-            images = std::filesystem::path{argv[i]};
-        } else if (arg == "--output") {
-            if (++i >= argc) return 2;
-            output = std::filesystem::path{argv[i]};
-        } else {
-            usage();
-            return 2;
-        }
-    }
-
-    if (!profiles || !images) {
+    const auto options = directory_options(argc, argv);
+    if (!options) {
         usage();
         return 2;
     }
 
-    const auto report = enrage::core::validate_profile_set(*profiles, *images);
-    if (!write_output(output, enrage::core::validation_report_json(report))) {
+    const auto report = enrage::core::validate_profile_set(*options->profiles, *options->images);
+    if (!write_output(options->output, enrage::core::validation_report_json(report))) {
         std::cerr << "failed to write validation report\n";
         return 4;
     }
@@ -164,6 +174,26 @@ int validate_command(int argc, char** argv) {
     std::cerr << "profiles=" << report.profiles_scanned
               << " images=" << report.images_scanned
               << " valid=" << (report.ok() ? "yes" : "no") << '\n';
+    return report.ok() ? 0 : 5;
+}
+
+int matrix_command(int argc, char** argv) {
+    const auto options = directory_options(argc, argv);
+    if (!options) {
+        usage();
+        return 2;
+    }
+
+    const auto report = enrage::core::build_profile_matrix(*options->profiles, *options->images);
+    if (!write_output(options->output, enrage::core::profile_matrix_json(report))) {
+        std::cerr << "failed to write matrix report\n";
+        return 4;
+    }
+
+    std::cerr << "profiles=" << report.profiles_scanned
+              << " images=" << report.images_scanned
+              << " rows=" << report.rows.size()
+              << " expected-valid=" << (report.ok() ? "yes" : "no") << '\n';
     return report.ok() ? 0 : 5;
 }
 
@@ -177,6 +207,7 @@ int main(int argc, char** argv) {
     const std::string_view command = argv[1];
     if (command == "draft") return draft_command(argc, argv);
     if (command == "validate") return validate_command(argc, argv);
+    if (command == "matrix") return matrix_command(argc, argv);
     usage();
     return 2;
 }
