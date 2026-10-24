@@ -10,6 +10,7 @@ target_compile_features(enrage_sdk INTERFACE cxx_std_23)
 
 add_library(enrage_core STATIC
     src/core/mod_registry.cpp
+    src/core/overlay.cpp
     src/core/runtime.cpp
     src/platform/signature/pattern.cpp
     src/adapters/null_adapter.cpp

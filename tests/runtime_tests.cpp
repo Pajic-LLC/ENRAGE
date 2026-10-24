@@ -1,5 +1,6 @@
 #include "adapters/null_adapter.hpp"
 #include "core/mod_registry.hpp"
+#include "core/overlay.hpp"
 #include "core/runtime.hpp"
 #include "platform/signature/pattern.hpp"
 
@@ -44,6 +45,34 @@ void registry_discovers_directories_and_packages() {
     std::filesystem::remove_all(root);
 }
 
+void overlay_prefers_highest_priority_and_rejects_traversal() {
+    const auto root = std::filesystem::temp_directory_path() / "enrage-overlay-test";
+    const auto low = root / "low";
+    const auto high = root / "high";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(low / "data");
+    std::filesystem::create_directories(high / "data");
+    std::ofstream{low / "data" / "value.bin"} << "low";
+    std::ofstream{high / "data" / "value.bin"} << "high";
+
+    enrage::core::Overlay overlay;
+    assert(overlay.mount({"low", low, 10}));
+    assert(overlay.mount({"high", high, 20}));
+    assert(!overlay.mount({"high", high, 30}));
+
+    const auto resolved = overlay.resolve("data/value.bin");
+    assert(resolved.has_value());
+    assert(*resolved == high / "data" / "value.bin");
+    assert(!overlay.resolve("../outside.bin").has_value());
+
+    assert(overlay.unmount("high"));
+    const auto fallback = overlay.resolve("data/value.bin");
+    assert(fallback.has_value());
+    assert(*fallback == low / "data" / "value.bin");
+
+    std::filesystem::remove_all(root);
+}
+
 void runtime_lifecycle_is_idempotent() {
     const auto root = std::filesystem::temp_directory_path() / "enrage-runtime-test";
     std::filesystem::remove_all(root);
@@ -67,6 +96,7 @@ void runtime_lifecycle_is_idempotent() {
 int main() {
     pattern_scanner_supports_wildcards();
     registry_discovers_directories_and_packages();
+    overlay_prefers_highest_priority_and_rejects_traversal();
     runtime_lifecycle_is_idempotent();
     return 0;
 }
