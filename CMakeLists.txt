@@ -65,7 +65,12 @@ if(ENRAGE_BUILD_TESTS)
     target_include_directories(enrage_pe_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_pe_tests PRIVATE enrage_core)
 
+    add_executable(enrage_environment_tests tests/environment_tests.cpp)
+    target_include_directories(enrage_environment_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_environment_tests PRIVATE enrage_core)
+
     add_test(NAME enrage_tests COMMAND enrage_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_fingerprint_tests COMMAND enrage_fingerprint_tests)
     add_test(NAME enrage_pe_tests COMMAND enrage_pe_tests)
+    add_test(NAME enrage_environment_tests COMMAND enrage_environment_tests)
 endif()
