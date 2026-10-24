@@ -8,9 +8,12 @@ add_library(enrage_sdk INTERFACE)
 target_include_directories(enrage_sdk INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_library(enrage_core STATIC
+    src/core/archive.cpp
+    src/core/manifest.cpp
     src/core/mod_graph.cpp
     src/core/mod_registry.cpp
     src/core/overlay.cpp
+    src/core/package.cpp
     src/core/plugin_host.cpp
     src/core/runtime.cpp
     src/platform/dynamic_library.cpp
@@ -35,6 +38,10 @@ endif()
 add_executable(enrage_host src/host/main.cpp)
 target_include_directories(enrage_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(enrage_host PRIVATE enrage_core)
+
+add_executable(enrage_pack src/tools/pack_main.cpp)
+target_include_directories(enrage_pack PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(enrage_pack PRIVATE enrage_core)
 
 if(ENRAGE_BUILD_TESTS)
     enable_testing()
