@@ -69,28 +69,69 @@ bool atomic_write(const std::filesystem::path& path, std::string_view contents) 
     return true;
 }
 
-std::optional<std::string> read_active_mod(const std::filesystem::path& path) {
+std::optional<RecoveryBreadcrumb> read_session(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     if (!input) return std::nullopt;
 
+    unsigned version{};
+    std::optional<std::string> legacy_active;
+    std::optional<std::string> mod;
+    std::optional<std::string> plugin;
+    std::optional<std::string> callback;
+
     std::string line;
-    bool version_ok = false;
-    std::optional<std::string> active;
     while (std::getline(input, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line == "version=1") {
-            version_ok = true;
+            version = 1;
             continue;
         }
-        constexpr std::string_view prefix = "active=";
-        if (line.starts_with(prefix)) {
-            const auto decoded = decode(std::string_view(line).substr(prefix.size()));
-            if (!decoded) return std::nullopt;
-            active = *decoded;
+        if (line == "version=2") {
+            version = 2;
+            continue;
+        }
+
+        const auto parse_field = [&](std::string_view prefix) -> std::optional<std::string> {
+            if (!line.starts_with(prefix)) return std::nullopt;
+            return decode(std::string_view(line).substr(prefix.size()));
+        };
+
+        if (line.starts_with("active=")) {
+            legacy_active = parse_field("active=");
+            if (!legacy_active) return std::nullopt;
+        } else if (line.starts_with("mod=")) {
+            mod = parse_field("mod=");
+            if (!mod) return std::nullopt;
+        } else if (line.starts_with("plugin=")) {
+            plugin = parse_field("plugin=");
+            if (!plugin) return std::nullopt;
+        } else if (line.starts_with("callback=")) {
+            callback = parse_field("callback=");
+            if (!callback) return std::nullopt;
         }
     }
-    if (!version_ok || !active) return std::nullopt;
-    return active;
+
+    if (!input.good() && !input.eof()) return std::nullopt;
+
+    if (version == 1) {
+        if (!legacy_active) return std::nullopt;
+        return RecoveryBreadcrumb{
+            .mod_id = *legacy_active,
+            .plugin_id = {},
+            .callback = legacy_active->empty() ? std::string{} : std::string{"activation"},
+        };
+    }
+
+    if (version == 2) {
+        if (!mod || !plugin || !callback) return std::nullopt;
+        return RecoveryBreadcrumb{
+            .mod_id = std::move(*mod),
+            .plugin_id = std::move(*plugin),
+            .callback = std::move(*callback),
+        };
+    }
+
+    return std::nullopt;
 }
 
 } // namespace
@@ -106,6 +147,7 @@ bool RecoveryManager::begin_session(bool force_safe_mode) {
     safe_mode_ = force_safe_mode;
     previous_session_incomplete_ = false;
     suspected_mod_.reset();
+    suspected_execution_.reset();
     quarantined_.clear();
 
     std::error_code error;
@@ -126,11 +168,26 @@ void RecoveryManager::end_session() noexcept {
 }
 
 bool RecoveryManager::enter_mod(std::string_view mod_id) {
-    if (!session_active_ || mod_id.empty()) return false;
-    return write_session(mod_id);
+    return enter_execution(mod_id, {}, "activation");
 }
 
 bool RecoveryManager::leave_mod() {
+    return leave_execution();
+}
+
+bool RecoveryManager::enter_execution(
+    std::string_view mod_id,
+    std::string_view plugin_id,
+    std::string_view callback) {
+    if (!session_active_ || mod_id.empty() || callback.empty()) return false;
+    return write_session({
+        .mod_id = std::string{mod_id},
+        .plugin_id = std::string{plugin_id},
+        .callback = std::string{callback},
+    });
+}
+
+bool RecoveryManager::leave_execution() {
     if (!session_active_) return false;
     return write_session({});
 }
@@ -145,6 +202,10 @@ bool RecoveryManager::previous_session_incomplete() const noexcept {
 
 const std::optional<std::string>& RecoveryManager::suspected_mod() const noexcept {
     return suspected_mod_;
+}
+
+const std::optional<RecoveryBreadcrumb>& RecoveryManager::suspected_execution() const noexcept {
+    return suspected_execution_;
 }
 
 bool RecoveryManager::quarantined(std::string_view mod_id) const noexcept {
@@ -198,9 +259,13 @@ bool RecoveryManager::save_quarantine() const {
     return atomic_write(quarantine_path_, contents);
 }
 
-bool RecoveryManager::write_session(std::string_view active_mod) const {
-    std::string contents = "version=1\nactive=";
-    contents += encode(active_mod);
+bool RecoveryManager::write_session(const RecoveryBreadcrumb& breadcrumb) const {
+    std::string contents = "version=2\nmod=";
+    contents += encode(breadcrumb.mod_id);
+    contents += "\nplugin=";
+    contents += encode(breadcrumb.plugin_id);
+    contents += "\ncallback=";
+    contents += encode(breadcrumb.callback);
     contents.push_back('\n');
     return atomic_write(session_path_, contents);
 }
@@ -211,20 +276,21 @@ bool RecoveryManager::recover_previous_session() {
     if (error) return false;
 
     previous_session_incomplete_ = true;
-    const auto active = read_active_mod(session_path_);
-    if (!active) {
+    const auto breadcrumb = read_session(session_path_);
+    if (!breadcrumb) {
         safe_mode_ = true;
         return true;
     }
 
-    if (active->empty()) {
+    if (breadcrumb->mod_id.empty()) {
         safe_mode_ = true;
         return true;
     }
 
-    suspected_mod_ = *active;
-    if (!quarantined(*active)) {
-        quarantined_.push_back(*active);
+    suspected_execution_ = *breadcrumb;
+    suspected_mod_ = breadcrumb->mod_id;
+    if (!quarantined(breadcrumb->mod_id)) {
+        quarantined_.push_back(breadcrumb->mod_id);
         std::ranges::sort(quarantined_);
         if (!save_quarantine()) return false;
     }
