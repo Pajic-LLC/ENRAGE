@@ -28,6 +28,7 @@ enum class DiagnosticCode {
     dependency_error,
     mount_failed,
     plugin_load_failed,
+    file_conflict,
 };
 
 struct Diagnostic {
