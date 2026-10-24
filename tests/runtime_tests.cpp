@@ -1,6 +1,7 @@
 #include "adapters/null_adapter.hpp"
 #include "core/mod_registry.hpp"
 #include "core/overlay.hpp"
+#include "core/plugin_host.hpp"
 #include "core/runtime.hpp"
 #include "platform/signature/pattern.hpp"
 
@@ -73,6 +74,21 @@ void overlay_prefers_highest_priority_and_rejects_traversal() {
     std::filesystem::remove_all(root);
 }
 
+void plugin_host_loads_c_abi_plugin(const std::filesystem::path& plugin_path) {
+    enrage::core::PluginHost host;
+    host.set_capabilities(ENRAGE_CAPABILITY_TICK);
+
+    assert(host.load(plugin_path));
+    assert(host.plugins().size() == 1);
+    assert(host.plugins()[0].id == "dev.enrage.test");
+    assert(host.tick_callback_count() == 1);
+
+    host.tick(1.0 / 60.0);
+    host.unload_all();
+    assert(host.plugins().empty());
+    assert(host.tick_callback_count() == 0);
+}
+
 void runtime_lifecycle_is_idempotent() {
     const auto root = std::filesystem::temp_directory_path() / "enrage-runtime-test";
     std::filesystem::remove_all(root);
@@ -93,10 +109,13 @@ void runtime_lifecycle_is_idempotent() {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    assert(argc == 2);
+
     pattern_scanner_supports_wildcards();
     registry_discovers_directories_and_packages();
     overlay_prefers_highest_priority_and_rejects_traversal();
+    plugin_host_loads_c_abi_plugin(argv[1]);
     runtime_lifecycle_is_idempotent();
     return 0;
 }

@@ -1,62 +1,79 @@
-#pragma once
+#ifndef ENRAGE_SDK_H
+#define ENRAGE_SDK_H
 
-#include <cstddef>
-#include <cstdint>
+#include <stddef.h>
+#include <stdint.h>
 
 #if defined(_WIN32)
-#define ENRAGE_EXPORT extern "C" __declspec(dllexport)
+#define ENRAGE_EXPORT __declspec(dllexport)
 #else
-#define ENRAGE_EXPORT extern "C" __attribute__((visibility("default")))
+#define ENRAGE_EXPORT __attribute__((visibility("default")))
+#endif
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 #define ENRAGE_ABI_VERSION 1u
+#define ENRAGE_PLUGIN_ENTRY_NAME "enrage_plugin_entry"
 
-namespace enrage {
+typedef enum enrage_result {
+    ENRAGE_OK = 0,
+    ENRAGE_INVALID_ARGUMENT = 1,
+    ENRAGE_INCOMPATIBLE_ABI = 2,
+    ENRAGE_UNSUPPORTED = 3,
+    ENRAGE_INTERNAL_ERROR = 4
+} enrage_result;
 
-enum class Result : std::uint32_t {
-    ok = 0,
-    invalid_argument,
-    incompatible_abi,
-    unsupported,
-    internal_error,
+typedef uint64_t enrage_capability_bits;
+
+enum {
+    ENRAGE_CAPABILITY_NONE = 0,
+    ENRAGE_CAPABILITY_TICK = 1ull << 0,
+    ENRAGE_CAPABILITY_VIRTUAL_FILES = 1ull << 1,
+    ENRAGE_CAPABILITY_NATIVE_CALLS = 1ull << 2,
+    ENRAGE_CAPABILITY_ASSETS = 1ull << 3
 };
 
-enum Capability : std::uint64_t {
-    capability_none = 0,
-    capability_tick = 1ull << 0,
-    capability_virtual_files = 1ull << 1,
-    capability_native_calls = 1ull << 2,
-    capability_assets = 1ull << 3,
-};
+typedef void (*enrage_tick_callback)(double delta_seconds, void* user_data);
+typedef void (*enrage_log_callback)(void* context, uint32_t level, const char* message);
+typedef enrage_capability_bits (*enrage_capabilities_callback)(void* context);
+typedef enrage_result (*enrage_register_tick_callback)(
+    void* context,
+    enrage_tick_callback callback,
+    void* user_data);
 
-using TickCallback = void (*)(double delta_seconds, void* user_data);
-using LogCallback = void (*)(std::uint32_t level, const char* message);
+typedef struct enrage_host_api {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    void* context;
 
-struct HostApi {
-    std::uint32_t abi_version;
-    std::uint32_t struct_size;
+    enrage_log_callback log;
+    enrage_capabilities_callback capabilities;
+    enrage_register_tick_callback register_tick;
+} enrage_host_api;
 
-    LogCallback log;
-    std::uint64_t (*capabilities)();
-    Result (*register_tick)(TickCallback callback, void* user_data);
-};
+typedef enrage_result (*enrage_plugin_load_callback)(const enrage_host_api* host);
+typedef void (*enrage_plugin_unload_callback)(void);
 
-struct PluginDescriptor {
-    std::uint32_t abi_version;
-    std::uint32_t struct_size;
+typedef struct enrage_plugin_descriptor {
+    uint32_t abi_version;
+    uint32_t struct_size;
 
     const char* id;
     const char* name;
     const char* version;
 
-    Result (*load)(const HostApi* host);
-    void (*unload)();
-};
+    enrage_plugin_load_callback load;
+    enrage_plugin_unload_callback unload;
+} enrage_plugin_descriptor;
 
-using PluginEntry = const PluginDescriptor* (*)();
+typedef const enrage_plugin_descriptor* (*enrage_plugin_entry_fn)(void);
 
-} // namespace enrage
+ENRAGE_EXPORT const enrage_plugin_descriptor* enrage_plugin_entry(void);
 
-// Native plugins export a function with this exact name and signature.
-// ENRAGE validates abi_version and struct_size before invoking the plugin.
-#define ENRAGE_PLUGIN_ENTRY enrage_plugin_entry
+#ifdef __cplusplus
+}
+#endif
+
+#endif
