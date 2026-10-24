@@ -20,6 +20,10 @@ std::uint64_t NullAdapter::capabilities() const noexcept {
     return ENRAGE_CAPABILITY_TICK | ENRAGE_CAPABILITY_VIRTUAL_FILES;
 }
 
+EnvironmentState NullAdapter::environment_state() const noexcept {
+    return EnvironmentState::local;
+}
+
 bool NullAdapter::initialize() {
     return true;
 }
