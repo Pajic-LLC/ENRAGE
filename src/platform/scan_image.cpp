@@ -126,11 +126,31 @@ ImageResolution resolve_in_image(
         };
     };
 
-    if (requested_region) {
-        const auto* region = image.region(*requested_region);
-        if (!region) return {};
-        const auto bytes = image.region_bytes(*requested_region);
-        if (!bytes) return {};
+    auto effective_region = requested_region;
+    if (!effective_region) {
+        const auto* symbol_spec = resolver.spec(symbol);
+        if (symbol_spec && !symbol_spec->region.empty()) {
+            effective_region = symbol_spec->region;
+        }
+    }
+
+    if (effective_region) {
+        const auto* region = image.region(*effective_region);
+        if (!region) {
+            return {
+                .state = resolver.spec(symbol)
+                    ? signature::ResolutionState::not_found
+                    : signature::ResolutionState::unknown_symbol,
+                .match_count = 0,
+            };
+        }
+        const auto bytes = image.region_bytes(*effective_region);
+        if (!bytes) {
+            return {
+                .state = signature::ResolutionState::not_found,
+                .match_count = 0,
+            };
+        }
         const auto resolution = resolver.resolve(symbol, *bytes);
         if (resolution.state != signature::ResolutionState::unique || !resolution.offset) {
             return {
