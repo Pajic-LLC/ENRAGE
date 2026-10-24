@@ -7,8 +7,6 @@ option(ENRAGE_BUILD_TESTS "Build ENRAGE regression tests" ON)
 add_library(enrage_sdk INTERFACE)
 target_include_directories(enrage_sdk INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-target_compile_features(enrage_sdk INTERFACE cxx_std_23)
-
 add_library(enrage_core STATIC
     src/core/mod_registry.cpp
     src/core/overlay.cpp

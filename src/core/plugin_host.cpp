@@ -48,7 +48,9 @@ bool PluginHost::load(const std::filesystem::path& path) {
         return false;
     }
 
+    const auto tick_count_before_load = tick_callbacks_.size();
     if (descriptor->load(&api_) != ENRAGE_OK) {
+        tick_callbacks_.resize(tick_count_before_load);
         return false;
     }
 
@@ -115,6 +117,10 @@ enrage_result PluginHost::register_tick_thunk(
     }
 
     auto* host = static_cast<PluginHost*>(context);
+    if ((host->capabilities_ & ENRAGE_CAPABILITY_TICK) == 0) {
+        return ENRAGE_UNSUPPORTED;
+    }
+
     host->tick_callbacks_.push_back({callback, user_data});
     return ENRAGE_OK;
 }
