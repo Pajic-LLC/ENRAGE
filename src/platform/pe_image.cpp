@@ -2,16 +2,15 @@
 
 #include <algorithm>
 #include <array>
-#include <cstring>
-#include <limits>
 
 namespace enrage::platform {
 namespace {
 
 std::optional<std::uint16_t> u16(std::span<const std::byte> bytes, std::size_t offset) {
     if (offset > bytes.size() || bytes.size() - offset < 2) return std::nullopt;
-    return static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(bytes[offset])) |
-           (static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(bytes[offset + 1])) << 8);
+    const auto low = static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(bytes[offset]));
+    const auto high = static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(bytes[offset + 1]));
+    return static_cast<std::uint16_t>(low | static_cast<std::uint16_t>(high << 8));
 }
 
 std::optional<std::uint32_t> u32(std::span<const std::byte> bytes, std::size_t offset) {
