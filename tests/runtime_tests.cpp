@@ -173,13 +173,13 @@ void overlay_prefers_highest_priority_and_rejects_traversal() {
 
     const auto resolved = overlay.resolve("data/value.bin");
     assert(resolved.has_value());
-    assert(*resolved == high / "data" / "value.bin");
+    assert(*resolved == std::filesystem::weakly_canonical(high / "data" / "value.bin"));
     assert(!overlay.resolve("../outside.bin").has_value());
 
     assert(overlay.unmount("high"));
     const auto fallback = overlay.resolve("data/value.bin");
     assert(fallback.has_value());
-    assert(*fallback == low / "data" / "value.bin");
+    assert(*fallback == std::filesystem::weakly_canonical(low / "data" / "value.bin"));
 
     std::filesystem::remove_all(root);
 }
