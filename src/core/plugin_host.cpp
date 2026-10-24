@@ -20,7 +20,7 @@ PluginHost::~PluginHost() {
     unload_all();
 }
 
-bool PluginHost::load(const std::filesystem::path& path) {
+bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_mod_id) {
     platform::DynamicLibrary library;
     if (!library.open(path)) {
         return false;
@@ -48,14 +48,30 @@ bool PluginHost::load(const std::filesystem::path& path) {
         return false;
     }
 
+    if (execution_begin_ && !owner_mod_id.empty() &&
+        !execution_begin_(owner_mod_id, descriptor->id, "load")) {
+        return false;
+    }
+
     const auto tick_count_before_load = tick_callbacks_.size();
-    if (descriptor->load(&api_) != ENRAGE_OK) {
+    registering_mod_id_ = std::string{owner_mod_id};
+    registering_plugin_id_ = descriptor->id;
+    const auto load_result = descriptor->load(&api_);
+    registering_mod_id_.clear();
+    registering_plugin_id_.clear();
+
+    const bool recovery_cleared = !execution_end_ || owner_mod_id.empty() || execution_end_();
+    if (load_result != ENRAGE_OK || !recovery_cleared) {
         tick_callbacks_.resize(tick_count_before_load);
+        if (load_result == ENRAGE_OK && descriptor->unload) {
+            descriptor->unload();
+        }
         return false;
     }
 
     LoadedPlugin loaded;
     loaded.path = path;
+    loaded.owner_mod_id = std::string{owner_mod_id};
     loaded.id = descriptor->id;
     loaded.name = descriptor->name;
     loaded.version = descriptor->version;
@@ -67,8 +83,21 @@ bool PluginHost::load(const std::filesystem::path& path) {
 
 void PluginHost::unload_all() noexcept {
     for (auto it = plugins_.rbegin(); it != plugins_.rend(); ++it) {
-        if (it->descriptor && it->descriptor->unload) {
-            it->descriptor->unload();
+        if (!it->descriptor || !it->descriptor->unload) {
+            continue;
+        }
+
+        bool execute = true;
+        if (execution_begin_ && !it->owner_mod_id.empty()) {
+            execute = execution_begin_(it->owner_mod_id, it->id, "unload");
+        }
+        if (!execute) {
+            continue;
+        }
+
+        it->descriptor->unload();
+        if (execution_end_ && !it->owner_mod_id.empty()) {
+            (void)execution_end_();
         }
     }
 
@@ -76,17 +105,34 @@ void PluginHost::unload_all() noexcept {
     plugins_.clear();
 }
 
-void PluginHost::tick(double delta_seconds) {
+bool PluginHost::tick(double delta_seconds) {
     const auto callbacks = tick_callbacks_;
     for (const auto& registration : callbacks) {
-        if (registration.callback) {
-            registration.callback(delta_seconds, registration.user_data);
+        if (!registration.callback) {
+            continue;
+        }
+
+        if (execution_begin_ && !registration.owner_mod_id.empty() &&
+            !execution_begin_(registration.owner_mod_id, registration.plugin_id, "tick")) {
+            return false;
+        }
+
+        registration.callback(delta_seconds, registration.user_data);
+
+        if (execution_end_ && !registration.owner_mod_id.empty() && !execution_end_()) {
+            return false;
         }
     }
+    return true;
 }
 
 void PluginHost::set_capabilities(enrage_capability_bits capabilities) noexcept {
     capabilities_ = capabilities;
+}
+
+void PluginHost::set_execution_observer(ExecutionBegin begin, ExecutionEnd end) {
+    execution_begin_ = std::move(begin);
+    execution_end_ = std::move(end);
 }
 
 const std::vector<LoadedPlugin>& PluginHost::plugins() const noexcept {
@@ -121,7 +167,12 @@ enrage_result PluginHost::register_tick_thunk(
         return ENRAGE_UNSUPPORTED;
     }
 
-    host->tick_callbacks_.push_back({callback, user_data});
+    host->tick_callbacks_.push_back({
+        callback,
+        user_data,
+        host->registering_mod_id_,
+        host->registering_plugin_id_,
+    });
     return ENRAGE_OK;
 }
 
