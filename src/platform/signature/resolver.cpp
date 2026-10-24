@@ -24,8 +24,8 @@ bool Resolver::add(SymbolSpec spec) {
 SymbolResolution Resolver::resolve(
     std::string_view name,
     std::span<const std::byte> bytes) const {
-    const auto found = std::ranges::find(specs_, name, &SymbolSpec::name);
-    if (found == specs_.end()) {
+    const auto* found = spec(name);
+    if (!found) {
         return {ResolutionState::unknown_symbol, std::nullopt, 0};
     }
 
@@ -62,6 +62,11 @@ SymbolResolution Resolver::resolve(
     }
 
     return {ResolutionState::unique, *resolved_offsets.begin(), 1};
+}
+
+const SymbolSpec* Resolver::spec(std::string_view name) const noexcept {
+    const auto found = std::ranges::find(specs_, name, &SymbolSpec::name);
+    return found == specs_.end() ? nullptr : &*found;
 }
 
 std::size_t Resolver::symbol_count() const noexcept {
