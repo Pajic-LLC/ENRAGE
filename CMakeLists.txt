@@ -18,6 +18,7 @@ add_library(enrage_core STATIC
     src/core/overlay.cpp
     src/core/package.cpp
     src/core/plugin_host.cpp
+    src/core/profile_authoring.cpp
     src/core/recovery.cpp
     src/core/runtime.cpp
     src/platform/dynamic_library.cpp
@@ -52,6 +53,10 @@ target_link_libraries(enrage_pack PRIVATE enrage_core)
 add_executable(enrage_inspect src/tools/inspect_main.cpp)
 target_include_directories(enrage_inspect PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(enrage_inspect PRIVATE enrage_core)
+
+add_executable(enrage_profile src/tools/profile_main.cpp)
+target_include_directories(enrage_profile PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(enrage_profile PRIVATE enrage_core)
 
 if(ENRAGE_BUILD_TESTS)
     enable_testing()
@@ -108,6 +113,11 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_inspection_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_inspection_tests)
 
+    add_executable(enrage_profile_authoring_tests tests/profile_authoring_tests.cpp)
+    target_include_directories(enrage_profile_authoring_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_profile_authoring_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_profile_authoring_tests)
+
     add_test(NAME enrage_tests COMMAND enrage_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_fingerprint_tests COMMAND enrage_fingerprint_tests)
     add_test(NAME enrage_pe_tests COMMAND enrage_pe_tests)
@@ -116,4 +126,5 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_build_profile_tests COMMAND enrage_build_profile_tests)
     add_test(NAME enrage_recovery_tests COMMAND enrage_recovery_tests)
     add_test(NAME enrage_inspection_tests COMMAND enrage_inspection_tests)
+    add_test(NAME enrage_profile_authoring_tests COMMAND enrage_profile_authoring_tests)
 endif()
