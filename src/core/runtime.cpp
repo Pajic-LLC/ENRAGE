@@ -37,18 +37,26 @@ std::string conflict_message(const OverlayConflict& conflict) {
 } // namespace
 
 Runtime::Runtime(std::unique_ptr<adapters::Adapter> adapter, std::filesystem::path mod_root)
-    : adapter_(std::move(adapter)), mods_(std::move(mod_root)) {}
+    : adapter_(std::move(adapter)),
+      mods_(mod_root),
+      state_root_(mod_root.parent_path() / ".enrage"),
+      recovery_(state_root_) {}
 
 Runtime::~Runtime() {
     stop();
 }
 
-bool Runtime::start() {
+bool Runtime::start(bool force_safe_mode) {
     if (running_ || !adapter_ || !adapter_->probe()) {
         return false;
     }
 
+    if (!recovery_.begin_session(force_safe_mode)) {
+        return false;
+    }
+
     if (!adapter_->initialize()) {
+        recovery_.end_session();
         return false;
     }
 
@@ -63,13 +71,53 @@ bool Runtime::start() {
     extensions_active_ = false;
 
     mods_.discover();
-    auto packages = PackageLoader::load(mods_, mods_.root().parent_path() / ".enrage");
+    auto packages = PackageLoader::load(mods_, state_root_);
     loaded_mods_ = std::move(packages.mods);
     diagnostics_ = std::move(packages.diagnostics);
+
+    if (recovery_.previous_session_incomplete()) {
+        if (recovery_.suspected_mod()) {
+            diagnostics_.push_back({
+                DiagnosticSeverity::warning,
+                DiagnosticCode::mod_quarantined,
+                {},
+                *recovery_.suspected_mod(),
+                "previous session ended while this mod was activating; it has been quarantined",
+            });
+        } else {
+            diagnostics_.push_back({
+                DiagnosticSeverity::warning,
+                DiagnosticCode::recovery_safe_mode,
+                {},
+                {},
+                "previous session ended unexpectedly; extensions are disabled for this launch",
+            });
+        }
+    } else if (recovery_.safe_mode()) {
+        diagnostics_.push_back({
+            DiagnosticSeverity::info,
+            DiagnosticCode::recovery_safe_mode,
+            {},
+            {},
+            "safe mode is active; extensions are disabled for this launch",
+        });
+    }
 
     std::vector<ModSpec> specs;
     specs.reserve(loaded_mods_.size());
     for (const auto& mod : loaded_mods_) {
+        if (recovery_.quarantined(mod.manifest.id)) {
+            if (!recovery_.suspected_mod() || *recovery_.suspected_mod() != mod.manifest.id) {
+                diagnostics_.push_back({
+                    DiagnosticSeverity::warning,
+                    DiagnosticCode::mod_quarantined,
+                    mod.source,
+                    mod.manifest.id,
+                    "mod is quarantined and will remain disabled until cleared",
+                });
+            }
+            continue;
+        }
         specs.push_back(mod.manifest.to_spec());
     }
 
@@ -88,7 +136,7 @@ bool Runtime::start() {
     load_order_ = std::move(resolution.order);
     running_ = true;
 
-    if (adapter_->environment_state() == adapters::EnvironmentState::local) {
+    if (!recovery_.safe_mode() && adapter_->environment_state() == adapters::EnvironmentState::local) {
         activate_extensions();
     }
     return true;
@@ -101,11 +149,17 @@ void Runtime::stop() noexcept {
 
     deactivate_extensions();
     adapter_->shutdown();
+    recovery_.end_session();
     running_ = false;
 }
 
 void Runtime::tick(double delta_seconds) {
     if (!running_) return;
+
+    if (recovery_.safe_mode()) {
+        if (extensions_active_) deactivate_extensions();
+        return;
+    }
 
     if (adapter_->environment_state() == adapters::EnvironmentState::local) {
         if (!extensions_active_) activate_extensions();
@@ -122,6 +176,10 @@ bool Runtime::running() const noexcept {
 
 bool Runtime::extensions_active() const noexcept {
     return extensions_active_;
+}
+
+bool Runtime::safe_mode() const noexcept {
+    return recovery_.safe_mode();
 }
 
 const ModRegistry& Runtime::mods() const noexcept {
@@ -144,12 +202,24 @@ const PluginHost& Runtime::plugins() const noexcept {
     return plugins_;
 }
 
+const std::vector<std::string>& Runtime::quarantined_mods() const noexcept {
+    return recovery_.quarantined_mods();
+}
+
 const adapters::Adapter& Runtime::adapter() const noexcept {
     return *adapter_;
 }
 
+bool Runtime::clear_quarantine(std::string_view mod_id) {
+    return recovery_.clear_quarantine(mod_id);
+}
+
+bool Runtime::clear_all_quarantine() {
+    return recovery_.clear_all_quarantine();
+}
+
 void Runtime::activate_extensions() {
-    if (extensions_active_ || !package_set_valid_) return;
+    if (extensions_active_ || !package_set_valid_ || recovery_.safe_mode()) return;
 
     for (std::size_t index = 0; index < load_order_.size(); ++index) {
         const auto& id = load_order_[index];
@@ -169,13 +239,36 @@ void Runtime::activate_extensions() {
         }
 
         for (const auto& plugin : found->native_plugins) {
-            if (!plugins_.load(plugin)) {
+            if (!recovery_.enter_mod(id)) {
+                diagnostics_.push_back({
+                    DiagnosticSeverity::error,
+                    DiagnosticCode::recovery_state_error,
+                    found->source,
+                    id,
+                    "could not persist recovery state; native plugin was not loaded",
+                });
+                continue;
+            }
+
+            const bool loaded = plugins_.load(plugin);
+            const bool recovery_cleared = recovery_.leave_mod();
+
+            if (!loaded) {
                 diagnostics_.push_back({
                     DiagnosticSeverity::error,
                     DiagnosticCode::plugin_load_failed,
                     found->source,
                     id,
                     "failed to load native plugin: " + plugin.filename().string(),
+                });
+            }
+            if (!recovery_cleared) {
+                diagnostics_.push_back({
+                    DiagnosticSeverity::error,
+                    DiagnosticCode::recovery_state_error,
+                    found->source,
+                    id,
+                    "could not clear active recovery marker after plugin activation",
                 });
             }
         }
