@@ -20,6 +20,7 @@ public:
 
     [[nodiscard]] std::size_t size() const noexcept;
     [[nodiscard]] std::optional<std::size_t> find(std::span<const std::byte> bytes) const noexcept;
+    [[nodiscard]] std::vector<std::size_t> find_all(std::span<const std::byte> bytes) const;
 
 private:
     explicit Pattern(std::vector<Byte> bytes);

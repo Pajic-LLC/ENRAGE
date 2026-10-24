@@ -15,6 +15,7 @@ add_library(enrage_core STATIC
     src/core/runtime.cpp
     src/platform/dynamic_library.cpp
     src/platform/signature/pattern.cpp
+    src/platform/signature/resolver.cpp
     src/adapters/null_adapter.cpp
 )
 

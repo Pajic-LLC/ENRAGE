@@ -5,6 +5,7 @@
 #include "core/plugin_host.hpp"
 #include "core/runtime.hpp"
 #include "platform/signature/pattern.hpp"
+#include "platform/signature/resolver.hpp"
 
 #include <array>
 #include <cassert>
@@ -28,6 +29,40 @@ void pattern_scanner_supports_wildcards() {
     const auto match = pattern->find(bytes);
     assert(match.has_value());
     assert(*match == 1);
+}
+
+void symbol_resolver_requires_unique_matches() {
+    const std::array bytes{
+        std::byte{0x90}, std::byte{0x48}, std::byte{0x8B}, std::byte{0x11}, std::byte{0x89},
+        std::byte{0x90}, std::byte{0xAA}, std::byte{0xBB}, std::byte{0xCC}, std::byte{0x90},
+    };
+
+    auto primary = enrage::platform::signature::Pattern::parse("48 8B ?? 89");
+    auto fallback = enrage::platform::signature::Pattern::parse("AA BB CC");
+    assert(primary && fallback);
+
+    enrage::platform::signature::Resolver resolver;
+    assert(resolver.add({
+        "ExampleSymbol",
+        {
+            {std::move(*primary), 0},
+            {std::move(*fallback), -5},
+        },
+    }));
+
+    const auto resolution = resolver.resolve("ExampleSymbol", bytes);
+    assert(resolution.state == enrage::platform::signature::ResolutionState::unique);
+    assert(resolution.offset == 1);
+
+    auto repeated = enrage::platform::signature::Pattern::parse("90");
+    assert(repeated);
+    assert(resolver.add({"Ambiguous", {{std::move(*repeated), 0}}}));
+    const auto ambiguous = resolver.resolve("Ambiguous", bytes);
+    assert(ambiguous.state == enrage::platform::signature::ResolutionState::ambiguous);
+    assert(ambiguous.match_count > 1);
+
+    const auto unknown = resolver.resolve("Missing", bytes);
+    assert(unknown.state == enrage::platform::signature::ResolutionState::unknown_symbol);
 }
 
 void registry_discovers_directories_and_packages() {
@@ -153,6 +188,7 @@ int main(int argc, char** argv) {
     assert(argc == 2);
 
     pattern_scanner_supports_wildcards();
+    symbol_resolver_requires_unique_matches();
     registry_discovers_directories_and_packages();
     mod_graph_resolves_dependencies_and_order_hints();
     mod_graph_reports_invalid_sets();

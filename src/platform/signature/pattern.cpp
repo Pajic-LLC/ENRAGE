@@ -3,6 +3,8 @@
 #include <charconv>
 #include <sstream>
 #include <string>
+#include <system_error>
+#include <utility>
 
 namespace enrage::platform::signature {
 
@@ -70,6 +72,31 @@ std::optional<std::size_t> Pattern::find(std::span<const std::byte> bytes) const
     }
 
     return std::nullopt;
+}
+
+std::vector<std::size_t> Pattern::find_all(std::span<const std::byte> bytes) const {
+    std::vector<std::size_t> matches;
+    if (bytes_.size() > bytes.size()) {
+        return matches;
+    }
+
+    for (std::size_t offset = 0; offset <= bytes.size() - bytes_.size(); ++offset) {
+        bool matches = true;
+        for (std::size_t index = 0; index < bytes_.size(); ++index) {
+            if (bytes_[index].wildcard) {
+                continue;
+            }
+            if (std::to_integer<std::uint8_t>(bytes[offset + index]) != bytes_[index].value) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) {
+            matches.push_back(offset);
+        }
+    }
+
+    return matches;
 }
 
 } // namespace enrage::platform::signature
