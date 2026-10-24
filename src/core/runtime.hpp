@@ -5,10 +5,12 @@
 #include "core/overlay.hpp"
 #include "core/package.hpp"
 #include "core/plugin_host.hpp"
+#include "core/recovery.hpp"
 
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace enrage::core {
@@ -21,18 +23,23 @@ public:
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
 
-    bool start();
+    bool start(bool force_safe_mode = false);
     void stop() noexcept;
     void tick(double delta_seconds);
 
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool extensions_active() const noexcept;
+    [[nodiscard]] bool safe_mode() const noexcept;
     [[nodiscard]] const ModRegistry& mods() const noexcept;
     [[nodiscard]] const std::vector<LoadedMod>& loaded_mods() const noexcept;
     [[nodiscard]] const std::vector<Diagnostic>& diagnostics() const noexcept;
     [[nodiscard]] const Overlay& overlay() const noexcept;
     [[nodiscard]] const PluginHost& plugins() const noexcept;
+    [[nodiscard]] const std::vector<std::string>& quarantined_mods() const noexcept;
     [[nodiscard]] const adapters::Adapter& adapter() const noexcept;
+
+    bool clear_quarantine(std::string_view mod_id);
+    bool clear_all_quarantine();
 
 private:
     void activate_extensions();
@@ -40,6 +47,8 @@ private:
 
     std::unique_ptr<adapters::Adapter> adapter_;
     ModRegistry mods_;
+    std::filesystem::path state_root_;
+    RecoveryManager recovery_;
     std::vector<LoadedMod> loaded_mods_;
     std::vector<Diagnostic> diagnostics_;
     std::vector<std::string> load_order_;
