@@ -34,13 +34,41 @@ std::string conflict_message(const OverlayConflict& conflict) {
     return message;
 }
 
+std::string recovery_message(const RecoveryBreadcrumb& breadcrumb) {
+    std::string message = "previous session ended while this mod was executing";
+    if (!breadcrumb.plugin_id.empty()) {
+        message += " plugin " + breadcrumb.plugin_id;
+    }
+    if (!breadcrumb.callback.empty()) {
+        message += " callback " + breadcrumb.callback;
+    }
+    message += "; it has been quarantined";
+    return message;
+}
+
 } // namespace
 
 Runtime::Runtime(std::unique_ptr<adapters::Adapter> adapter, std::filesystem::path mod_root)
     : adapter_(std::move(adapter)),
       mods_(mod_root),
       state_root_(mod_root.parent_path() / ".enrage"),
-      recovery_(state_root_) {}
+      recovery_(state_root_) {
+    plugins_.set_execution_observer(
+        [this](std::string_view mod_id, std::string_view plugin_id, std::string_view callback) {
+            const bool ok = recovery_.enter_execution(mod_id, plugin_id, callback);
+            if (!ok) {
+                report_recovery_state_error("could not persist native execution recovery marker");
+            }
+            return ok;
+        },
+        [this]() {
+            const bool ok = recovery_.leave_execution();
+            if (!ok) {
+                report_recovery_state_error("could not clear native execution recovery marker");
+            }
+            return ok;
+        });
+}
 
 Runtime::~Runtime() {
     stop();
@@ -69,6 +97,7 @@ bool Runtime::start(bool force_safe_mode) {
     package_set_valid_ = false;
     conflicts_reported_ = false;
     extensions_active_ = false;
+    recovery_state_error_reported_ = false;
 
     mods_.discover();
     auto packages = PackageLoader::load(mods_, state_root_);
@@ -77,12 +106,15 @@ bool Runtime::start(bool force_safe_mode) {
 
     if (recovery_.previous_session_incomplete()) {
         if (recovery_.suspected_mod()) {
+            const auto message = recovery_.suspected_execution()
+                ? recovery_message(*recovery_.suspected_execution())
+                : std::string{"previous session ended while this mod was activating; it has been quarantined"};
             diagnostics_.push_back({
                 DiagnosticSeverity::warning,
                 DiagnosticCode::mod_quarantined,
                 {},
                 *recovery_.suspected_mod(),
-                "previous session ended while this mod was activating; it has been quarantined",
+                message,
             });
         } else {
             diagnostics_.push_back({
@@ -163,7 +195,9 @@ void Runtime::tick(double delta_seconds) {
 
     if (adapter_->environment_state() == adapters::EnvironmentState::local) {
         if (!extensions_active_) activate_extensions();
-        if (extensions_active_) plugins_.tick(delta_seconds);
+        if (extensions_active_ && !plugins_.tick(delta_seconds)) {
+            deactivate_extensions();
+        }
         return;
     }
 
@@ -206,6 +240,10 @@ const std::vector<std::string>& Runtime::quarantined_mods() const noexcept {
     return recovery_.quarantined_mods();
 }
 
+const std::optional<RecoveryBreadcrumb>& Runtime::suspected_execution() const noexcept {
+    return recovery_.suspected_execution();
+}
+
 const adapters::Adapter& Runtime::adapter() const noexcept {
     return *adapter_;
 }
@@ -239,20 +277,7 @@ void Runtime::activate_extensions() {
         }
 
         for (const auto& plugin : found->native_plugins) {
-            if (!recovery_.enter_mod(id)) {
-                diagnostics_.push_back({
-                    DiagnosticSeverity::error,
-                    DiagnosticCode::recovery_state_error,
-                    found->source,
-                    id,
-                    "could not persist recovery state; native plugin was not loaded",
-                });
-                continue;
-            }
-
-            const bool loaded = plugins_.load(plugin);
-            const bool recovery_cleared = recovery_.leave_mod();
-
+            const bool loaded = plugins_.load(plugin, id);
             if (!loaded) {
                 diagnostics_.push_back({
                     DiagnosticSeverity::error,
@@ -260,15 +285,6 @@ void Runtime::activate_extensions() {
                     found->source,
                     id,
                     "failed to load native plugin: " + plugin.filename().string(),
-                });
-            }
-            if (!recovery_cleared) {
-                diagnostics_.push_back({
-                    DiagnosticSeverity::error,
-                    DiagnosticCode::recovery_state_error,
-                    found->source,
-                    id,
-                    "could not clear active recovery marker after plugin activation",
                 });
             }
         }
@@ -294,6 +310,18 @@ void Runtime::deactivate_extensions() noexcept {
     plugins_.unload_all();
     overlay_.clear();
     extensions_active_ = false;
+}
+
+void Runtime::report_recovery_state_error(std::string message) {
+    if (recovery_state_error_reported_) return;
+    recovery_state_error_reported_ = true;
+    diagnostics_.push_back({
+        DiagnosticSeverity::error,
+        DiagnosticCode::recovery_state_error,
+        {},
+        {},
+        std::move(message),
+    });
 }
 
 } // namespace enrage::core
