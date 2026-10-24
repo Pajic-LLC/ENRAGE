@@ -10,6 +10,7 @@ public:
     [[nodiscard]] bool probe() override;
     [[nodiscard]] BuildIdentity build() const override;
     [[nodiscard]] std::uint64_t capabilities() const noexcept override;
+    [[nodiscard]] EnvironmentState environment_state() const noexcept override;
     bool initialize() override;
     void shutdown() noexcept override;
 };
