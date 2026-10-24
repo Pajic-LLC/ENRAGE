@@ -10,12 +10,14 @@ target_include_directories(enrage_sdk INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/incl
 add_library(enrage_core STATIC
     src/core/archive.cpp
     src/core/build_catalog.cpp
+    src/core/build_profile_io.cpp
     src/core/manifest.cpp
     src/core/mod_graph.cpp
     src/core/mod_registry.cpp
     src/core/overlay.cpp
     src/core/package.cpp
     src/core/plugin_host.cpp
+    src/core/recovery.cpp
     src/core/runtime.cpp
     src/platform/dynamic_library.cpp
     src/platform/fingerprint.cpp
@@ -86,9 +88,21 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_overlay_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_overlay_tests)
 
+    add_executable(enrage_build_profile_tests tests/build_profile_tests.cpp)
+    target_include_directories(enrage_build_profile_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_build_profile_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_build_profile_tests)
+
+    add_executable(enrage_recovery_tests tests/recovery_tests.cpp)
+    target_include_directories(enrage_recovery_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_recovery_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_recovery_tests)
+
     add_test(NAME enrage_tests COMMAND enrage_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_fingerprint_tests COMMAND enrage_fingerprint_tests)
     add_test(NAME enrage_pe_tests COMMAND enrage_pe_tests)
     add_test(NAME enrage_environment_tests COMMAND enrage_environment_tests)
     add_test(NAME enrage_overlay_tests COMMAND enrage_overlay_tests)
+    add_test(NAME enrage_build_profile_tests COMMAND enrage_build_profile_tests)
+    add_test(NAME enrage_recovery_tests COMMAND enrage_recovery_tests)
 endif()
