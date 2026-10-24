@@ -29,6 +29,9 @@ enum class DiagnosticCode {
     mount_failed,
     plugin_load_failed,
     file_conflict,
+    recovery_state_error,
+    recovery_safe_mode,
+    mod_quarantined,
 };
 
 struct Diagnostic {
