@@ -2,6 +2,7 @@
 
 #include "core/build_profile_io.hpp"
 #include "platform/fingerprint.hpp"
+#include "platform/scan_image.hpp"
 #include "platform/signature/resolver.hpp"
 
 #include <fstream>
@@ -77,15 +78,30 @@ AuthoringResult propagate_profile(
     }
     if (!result.errors.empty()) return result;
 
+    const auto scan_image = platform::ScanImage::from_file(*reference_bytes);
     std::vector<SymbolSeed> seeds;
     seeds.reserve(profile.symbols.size());
     for (const auto& symbol : profile.symbols) {
-        const auto resolution = resolver.resolve(symbol.name, *reference_bytes);
-        if (resolution.state != platform::signature::ResolutionState::unique || !resolution.offset) {
-            result.errors.push_back({symbol.name, "reference symbol is not uniquely resolvable"});
+        if (symbol.region.empty()) {
+            const auto resolution = resolver.resolve(symbol.name, *reference_bytes);
+            if (resolution.state != platform::signature::ResolutionState::unique || !resolution.offset) {
+                result.errors.push_back({symbol.name, "reference symbol is not uniquely resolvable"});
+                continue;
+            }
+            seeds.push_back({symbol.name, *resolution.offset});
             continue;
         }
-        seeds.push_back({symbol.name, *resolution.offset});
+
+        if (!scan_image) {
+            result.errors.push_back({symbol.name, "section-scoped symbol requires a valid PE image"});
+            continue;
+        }
+        const auto resolution = platform::resolve_in_image(resolver, symbol.name, *scan_image);
+        if (resolution.state != platform::signature::ResolutionState::unique || !resolution.storage_offset) {
+            result.errors.push_back({symbol.name, "reference symbol is not uniquely resolvable in its region"});
+            continue;
+        }
+        seeds.push_back({symbol.name, *resolution.storage_offset});
     }
     if (!result.errors.empty()) return result;
 
