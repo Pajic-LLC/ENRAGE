@@ -81,17 +81,17 @@ std::vector<std::size_t> Pattern::find_all(std::span<const std::byte> bytes) con
     }
 
     for (std::size_t offset = 0; offset <= bytes.size() - bytes_.size(); ++offset) {
-        bool matches = true;
+        bool matched = true;
         for (std::size_t index = 0; index < bytes_.size(); ++index) {
             if (bytes_[index].wildcard) {
                 continue;
             }
             if (std::to_integer<std::uint8_t>(bytes[offset + index]) != bytes_[index].value) {
-                matches = false;
+                matched = false;
                 break;
             }
         }
-        if (matches) {
+        if (matched) {
             matches.push_back(offset);
         }
     }
