@@ -24,6 +24,16 @@ std::string issue_message(const ModIssue& issue) {
     return "invalid mod graph";
 }
 
+std::string conflict_message(const OverlayConflict& conflict) {
+    std::string message = "multiple mods provide " + conflict.logical_path.generic_string() + ": ";
+    for (std::size_t i = 0; i < conflict.mounts.size(); ++i) {
+        if (i != 0) message += ", ";
+        message += conflict.mounts[i];
+    }
+    if (!conflict.mounts.empty()) message += " (first has priority)";
+    return message;
+}
+
 } // namespace
 
 Runtime::Runtime(std::unique_ptr<adapters::Adapter> adapter, std::filesystem::path mod_root)
@@ -49,6 +59,7 @@ bool Runtime::start() {
     plugins_.unload_all();
     plugins_.set_capabilities(adapter_->capabilities());
     package_set_valid_ = false;
+    conflicts_reported_ = false;
     extensions_active_ = false;
 
     mods_.discover();
@@ -168,6 +179,19 @@ void Runtime::activate_extensions() {
                 });
             }
         }
+    }
+
+    if (!conflicts_reported_) {
+        for (const auto& conflict : overlay_.conflicts()) {
+            diagnostics_.push_back({
+                DiagnosticSeverity::warning,
+                DiagnosticCode::file_conflict,
+                {},
+                conflict.mounts.empty() ? std::string{} : conflict.mounts.front(),
+                conflict_message(conflict),
+            });
+        }
+        conflicts_reported_ = true;
     }
 
     extensions_active_ = true;
