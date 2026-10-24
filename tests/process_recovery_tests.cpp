@@ -3,15 +3,71 @@
 #include "core/runtime.hpp"
 
 #include <cassert>
-#include <cstdlib>
 #include <filesystem>
 #include <memory>
-#include <string>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
-std::string quote(const std::filesystem::path& path) {
-    return "\"" + path.string() + "\"";
+int run_child(
+    const std::filesystem::path& probe,
+    const std::filesystem::path& root,
+    const std::filesystem::path& plugin) {
+#ifdef _WIN32
+    std::wstring command = L"\"" + probe.wstring() + L"\" \"" + root.wstring() +
+                           L"\" \"" + plugin.wstring() + L"\"";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+
+    if (!CreateProcessW(
+            probe.c_str(),
+            command.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            0,
+            nullptr,
+            nullptr,
+            &startup,
+            &process)) {
+        return -1;
+    }
+
+    const DWORD wait = WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 0;
+    const BOOL have_code = GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    if (wait != WAIT_OBJECT_0 || !have_code) return -1;
+    return static_cast<int>(exit_code);
+#else
+    const pid_t child = fork();
+    if (child < 0) return -1;
+    if (child == 0) {
+        execl(
+            probe.c_str(),
+            probe.c_str(),
+            root.c_str(),
+            plugin.c_str(),
+            static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    int status = 0;
+    if (waitpid(child, &status, 0) != child) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
+#endif
 }
 
 } // namespace
@@ -23,8 +79,8 @@ int main(int argc, char** argv) {
     const auto root = std::filesystem::temp_directory_path() / "enrage-process-recovery-test";
     std::filesystem::remove_all(root);
 
-    const auto command = quote(probe) + " " + quote(root) + " " + quote(plugin);
-    const int result = std::system(command.c_str());
+    const int result = run_child(probe, root, plugin);
+    assert(result >= 0);
     assert(result != 0);
 
     {
