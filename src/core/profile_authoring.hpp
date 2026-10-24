@@ -72,8 +72,6 @@ struct ValidationSymbol {
     platform::signature::ResolutionState state{platform::signature::ResolutionState::unknown_symbol};
     std::size_t match_count{};
     std::optional<std::size_t> offset;
-    std::vector<std::filesystem::path> unique_on_other_images;
-    std::vector<std::filesystem::path> ambiguous_on_other_images;
 };
 
 struct ValidationBuild {
