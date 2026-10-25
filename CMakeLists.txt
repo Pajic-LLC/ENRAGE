@@ -82,6 +82,10 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_fault_plugin PRIVATE enrage_sdk)
     set_target_properties(enrage_fault_plugin PROPERTIES PREFIX "")
 
+    add_library(enrage_capability_probe_plugin MODULE tests/capability_probe_plugin.cpp)
+    target_link_libraries(enrage_capability_probe_plugin PRIVATE enrage_sdk)
+    set_target_properties(enrage_capability_probe_plugin PROPERTIES PREFIX "")
+
     add_executable(enrage_crash_probe tests/crash_probe.cpp)
     target_include_directories(enrage_crash_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_crash_probe PRIVATE enrage_core)
@@ -185,7 +189,8 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_profile_propagation_tests COMMAND enrage_profile_propagation_tests)
     add_test(NAME enrage_profile_support_tests COMMAND enrage_profile_support_tests)
     add_test(NAME enrage_scan_image_tests COMMAND enrage_scan_image_tests)
-    add_test(NAME enrage_lab_adapter_tests COMMAND enrage_lab_adapter_tests)
+    add_test(NAME enrage_lab_adapter_tests
+        COMMAND enrage_lab_adapter_tests $<TARGET_FILE:enrage_capability_probe_plugin>)
     add_test(NAME enrage_plugin_execution_tests
         COMMAND enrage_plugin_execution_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_process_recovery_tests
