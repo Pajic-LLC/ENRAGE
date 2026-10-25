@@ -34,6 +34,7 @@ enum class DiagnosticCode {
     mod_quarantined,
     anchor_health_changed,
     capability_health_changed,
+    reload_rejected,
 };
 
 struct Diagnostic {
@@ -54,6 +55,7 @@ struct LoadedMod {
     std::filesystem::path source;
     std::filesystem::path root;
     std::filesystem::path content_root;
+    std::filesystem::path archive_path;
     ModManifest manifest;
     std::vector<std::filesystem::path> native_plugins;
 };
