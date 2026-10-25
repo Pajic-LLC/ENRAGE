@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -30,6 +31,7 @@ public:
         std::string_view plugin_id,
         std::string_view callback)>;
     using ExecutionEnd = std::function<bool()>;
+    using VirtualFileReader = std::function<std::optional<std::vector<std::byte>>(std::string_view)>;
 
     PluginHost();
     ~PluginHost();
@@ -45,6 +47,7 @@ public:
 
     void set_capabilities(enrage_capability_bits capabilities) noexcept;
     void set_execution_observer(ExecutionBegin begin, ExecutionEnd end);
+    void set_virtual_file_reader(VirtualFileReader reader);
 
     [[nodiscard]] const std::vector<LoadedPlugin>& plugins() const noexcept;
     [[nodiscard]] std::size_t tick_callback_count() const noexcept;
@@ -66,6 +69,12 @@ private:
         void* context,
         enrage_tick_callback callback,
         void* user_data);
+    static enrage_result ENRAGE_CALL vfs_read_thunk(
+        void* context,
+        const char* logical_path,
+        void* buffer,
+        std::size_t buffer_size,
+        std::size_t* required_size);
 
     enrage_host_api api_{};
     enrage_capability_bits capabilities_{};
@@ -73,6 +82,7 @@ private:
     std::vector<LoadedPlugin> plugins_;
     ExecutionBegin execution_begin_;
     ExecutionEnd execution_end_;
+    VirtualFileReader virtual_file_reader_;
     std::string registering_mod_id_;
     std::string registering_plugin_id_;
 };
