@@ -132,6 +132,21 @@ int main() {
     assert(from_file.virtual_address == 0x140001010ull);
     assert(from_loaded.virtual_address == 0x180001010ull);
 
+#if defined(_WIN32)
+    const auto current = enrage::adapters::CurrentProcessImageProvider::create();
+    assert(current);
+    assert(current->name() == "current-process");
+    const auto current_identity = current->identity();
+    const auto disk_identity = enrage::platform::fingerprint_file(current->executable_path());
+    assert(current_identity && disk_identity && *current_identity == *disk_identity);
+    const auto current_image = current->scan_image();
+    assert(current_image);
+    assert(current_image->layout() == enrage::platform::ImageLayout::loaded);
+    assert(current_image->base_address() != 0);
+#else
+    assert(!enrage::adapters::CurrentProcessImageProvider::create());
+#endif
+
     std::filesystem::remove_all(root);
     return 0;
 }
