@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define ENRAGE_C_ASSERT(name, expression) typedef char enrage_c_assert_##name[(expression) ? 1 : -1]
+
 static void ENRAGE_CALL on_tick(double delta_seconds, void* user_data) {
     (void)delta_seconds;
     (void)user_data;
@@ -31,11 +33,11 @@ static const enrage_plugin_descriptor descriptor = {
     on_unload,
 };
 
-_Static_assert(ENRAGE_HOST_API_V1_SIZE <= ENRAGE_HOST_API_V1_VFS_SIZE, "host API tail moved backwards");
-_Static_assert(ENRAGE_HOST_API_V1_VFS_SIZE <= sizeof(enrage_host_api), "VFS host ABI prefix must fit");
-_Static_assert(ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE <= sizeof(enrage_plugin_descriptor), "plugin ABI prefix must fit");
-_Static_assert(ENRAGE_CAPABILITY_TICK == 1ull, "capability bit changed");
-_Static_assert(ENRAGE_CAPABILITY_VIRTUAL_FILES == 2ull, "capability bit changed");
+ENRAGE_C_ASSERT(host_tail_order, ENRAGE_HOST_API_V1_SIZE <= ENRAGE_HOST_API_V1_VFS_SIZE);
+ENRAGE_C_ASSERT(host_vfs_prefix_fits, ENRAGE_HOST_API_V1_VFS_SIZE <= sizeof(enrage_host_api));
+ENRAGE_C_ASSERT(plugin_prefix_fits, ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE <= sizeof(enrage_plugin_descriptor));
+ENRAGE_C_ASSERT(tick_capability_bit, ENRAGE_CAPABILITY_TICK == 1ull);
+ENRAGE_C_ASSERT(vfs_capability_bit, ENRAGE_CAPABILITY_VIRTUAL_FILES == 2ull);
 
 int main(void) {
     return descriptor.struct_size >= ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE ? 0 : 1;
