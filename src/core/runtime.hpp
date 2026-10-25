@@ -30,6 +30,9 @@ public:
     void tick(double delta_seconds);
     bool reload_support();
     bool reload_mods();
+    bool reload_plugin(
+        std::string_view plugin_id,
+        const std::optional<std::filesystem::path>& replacement_path = std::nullopt);
 
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool extensions_active() const noexcept;
