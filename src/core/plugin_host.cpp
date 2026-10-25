@@ -14,8 +14,15 @@ namespace {
 
 std::atomic_uint64_t shadow_sequence{};
 std::atomic_uint64_t worker_sequence{1};
+std::atomic_uint64_t plugin_generation_sequence{1};
 constexpr std::size_t max_reload_state_bytes = 16u * 1024u * 1024u;
 constexpr auto worker_stop_timeout = std::chrono::seconds{1};
+
+std::uint64_t next_generation() noexcept {
+    auto generation = plugin_generation_sequence.fetch_add(1, std::memory_order_relaxed);
+    if (generation != 0) return generation;
+    return plugin_generation_sequence.fetch_add(1, std::memory_order_relaxed);
+}
 
 bool valid_descriptor(const enrage_plugin_descriptor* descriptor) {
     return descriptor &&
@@ -56,6 +63,7 @@ thread_local const PluginHost* PluginHost::callback_host_ = nullptr;
 thread_local PluginHost* PluginHost::registration_host_ = nullptr;
 thread_local std::string PluginHost::registration_mod_id_;
 thread_local std::string PluginHost::registration_plugin_id_;
+thread_local std::uint64_t PluginHost::registration_generation_{};
 thread_local std::vector<PluginHost::TickRegistration>* PluginHost::registration_target_ = nullptr;
 thread_local std::vector<PluginHost::PendingWorker>* PluginHost::registration_worker_target_ = nullptr;
 
@@ -70,6 +78,16 @@ PluginHost::CallbackGuard::~CallbackGuard() {
 
 bool PluginHost::callback_active_on_this_thread() const noexcept {
     return callback_host_ == this;
+}
+
+bool PluginHost::begin_execution(const PluginExecutionContext& context) const {
+    if (detailed_execution_begin_) return detailed_execution_begin_(context);
+    if (execution_begin_) return execution_begin_(context.mod_id, context.plugin_id, context.callback);
+    return true;
+}
+
+bool PluginHost::end_execution() const {
+    return !execution_end_ || execution_end_();
 }
 
 PluginHost::PluginHost() {
@@ -157,6 +175,7 @@ std::optional<PluginHost::PreparedPlugin> PluginHost::prepare_plugin(
     prepared.id = descriptor->id;
     prepared.name = descriptor->name;
     prepared.version = descriptor->version;
+    prepared.generation = next_generation();
     prepared.descriptor = descriptor;
     prepared.library = std::move(library);
     return prepared;
@@ -175,6 +194,7 @@ bool PluginHost::stage_workers(
             worker->user_data = request.user_data;
             worker->owner_mod_id = request.owner_mod_id;
             worker->plugin_id = request.plugin_id;
+            worker->generation = request.generation;
 
             auto* registration = worker.get();
             registration->thread = std::thread([this, registration] {
@@ -191,11 +211,21 @@ bool PluginHost::stage_workers(
                     }
                 }
 
-                try {
-                    CallbackGuard callback_guard{this};
-                    registration->main_callback(registration->id, registration->user_data);
-                } catch (...) {
-                    // A plugin exception must not escape the host-owned thread.
+                const PluginExecutionContext context{
+                    registration->owner_mod_id,
+                    registration->plugin_id,
+                    "worker",
+                    registration->generation,
+                    registration->id,
+                };
+                if (registration->owner_mod_id.empty() || begin_execution(context)) {
+                    try {
+                        CallbackGuard callback_guard{this};
+                        registration->main_callback(registration->id, registration->user_data);
+                    } catch (...) {
+                        // A plugin exception must not escape the host-owned thread.
+                    }
+                    if (!registration->owner_mod_id.empty()) (void)end_execution();
                 }
 
                 {
@@ -272,6 +302,15 @@ bool PluginHost::stop_workers(
             !worker->request_stop_callback) {
             continue;
         }
+
+        const PluginExecutionContext context{
+            worker->owner_mod_id,
+            worker->plugin_id,
+            "worker-stop",
+            worker->generation,
+            worker->id,
+        };
+        if (!worker->owner_mod_id.empty() && !begin_execution(context)) continue;
         try {
             CallbackGuard callback_guard{this};
             worker->request_stop_callback(worker->id, worker->user_data);
@@ -279,6 +318,7 @@ bool PluginHost::stop_workers(
             // The stop flag is authoritative; a throwing wake callback does not
             // permit the generation to unload while its worker is still alive.
         }
+        if (!worker->owner_mod_id.empty()) (void)end_execution();
     }
 
     const auto deadline = std::chrono::steady_clock::now() + worker_stop_timeout;
@@ -338,6 +378,7 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     registration_host_ = this;
     registration_mod_id_ = std::string{owner_mod_id};
     registration_plugin_id_ = prepared->id;
+    registration_generation_ = prepared->generation;
     registration_target_ = nullptr;
     registration_worker_target_ = &pending_workers;
 
@@ -350,6 +391,7 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     registration_host_ = nullptr;
     registration_mod_id_.clear();
     registration_plugin_id_.clear();
+    registration_generation_ = 0;
     registration_target_ = nullptr;
     registration_worker_target_ = nullptr;
 
@@ -386,6 +428,7 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     loaded.id = std::move(prepared->id);
     loaded.name = std::move(prepared->name);
     loaded.version = std::move(prepared->version);
+    loaded.generation = prepared->generation;
     loaded.descriptor = prepared->descriptor;
     loaded.library = std::move(prepared->library);
     plugins_.push_back(std::move(loaded));
@@ -474,6 +517,7 @@ bool PluginHost::reload(
     registration_host_ = this;
     registration_mod_id_ = found->owner_mod_id;
     registration_plugin_id_ = found->id;
+    registration_generation_ = prepared->generation;
     registration_target_ = &staged_callbacks;
     registration_worker_target_ = &pending_workers;
 
@@ -486,6 +530,7 @@ bool PluginHost::reload(
     registration_host_ = nullptr;
     registration_mod_id_.clear();
     registration_plugin_id_.clear();
+    registration_generation_ = 0;
     registration_target_ = nullptr;
     registration_worker_target_ = nullptr;
 
@@ -592,6 +637,7 @@ bool PluginHost::reload(
     replacement.id = std::move(prepared->id);
     replacement.name = std::move(prepared->name);
     replacement.version = std::move(prepared->version);
+    replacement.generation = prepared->generation;
     replacement.descriptor = prepared->descriptor;
     replacement.library = std::move(prepared->library);
     plugins_[index] = std::move(replacement);
@@ -687,17 +733,21 @@ bool PluginHost::tick(double delta_seconds) {
     for (const auto& registration : callbacks) {
         if (!registration.callback) continue;
 
-        if (execution_begin_ && !registration.owner_mod_id.empty() &&
-            !execution_begin_(registration.owner_mod_id, registration.plugin_id, "tick")) {
-            return false;
-        }
+        const PluginExecutionContext context{
+            registration.owner_mod_id,
+            registration.plugin_id,
+            "tick",
+            registration.generation,
+            0,
+        };
+        if (!registration.owner_mod_id.empty() && !begin_execution(context)) return false;
 
         {
             CallbackGuard callback_guard{this};
             registration.callback(delta_seconds, registration.user_data);
         }
 
-        if (execution_end_ && !registration.owner_mod_id.empty() && !execution_end_()) return false;
+        if (!registration.owner_mod_id.empty() && !end_execution()) return false;
     }
     return true;
 }
@@ -710,6 +760,13 @@ void PluginHost::set_execution_observer(ExecutionBegin begin, ExecutionEnd end) 
     if (callback_active_on_this_thread()) return;
     std::scoped_lock lock(lifecycle_mutex_);
     execution_begin_ = std::move(begin);
+    execution_end_ = std::move(end);
+}
+
+void PluginHost::set_detailed_execution_observer(DetailedExecutionBegin begin, ExecutionEnd end) {
+    if (callback_active_on_this_thread()) return;
+    std::scoped_lock lock(lifecycle_mutex_);
+    detailed_execution_begin_ = std::move(begin);
     execution_end_ = std::move(end);
 }
 
@@ -760,6 +817,7 @@ enrage_result ENRAGE_CALL PluginHost::register_tick_thunk(
         user_data,
         registration_mod_id_,
         registration_plugin_id_,
+        registration_generation_,
     };
     if (registration_target_) {
         registration_target_->push_back(std::move(registration));
@@ -831,6 +889,7 @@ enrage_result ENRAGE_CALL PluginHost::start_worker_thunk(
             user_data,
             registration_mod_id_,
             registration_plugin_id_,
+            registration_generation_,
         });
     } catch (...) {
         return ENRAGE_INTERNAL_ERROR;
