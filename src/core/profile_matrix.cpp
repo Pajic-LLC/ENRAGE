@@ -1,6 +1,6 @@
 #include "core/profile_matrix.hpp"
 
-#include "core/build_profile_io.hpp"
+#include "core/build_profile_v3.hpp"
 #include "platform/fingerprint.hpp"
 #include "platform/scan_image.hpp"
 
@@ -140,7 +140,7 @@ ProfileMatrixReport build_profile_matrix(
             report.errors.push_back({profile_file, "profile is unreadable"});
             continue;
         }
-        auto parsed = parse_build_profile(*text, profile_file);
+        auto parsed = parse_build_profile_v3(*text, profile_file);
         if (!parsed.ok()) {
             report.errors.push_back({profile_file, parsed.error ? parsed.error->message : "invalid profile"});
             continue;
