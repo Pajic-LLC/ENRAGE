@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -41,6 +42,29 @@ bool has_temporary_artifact(
         if (it->path().filename().string().starts_with(prefix)) return true;
     }
     return static_cast<bool>(error);
+}
+
+void write_minimal_archive(
+    const std::filesystem::path& package,
+    const std::vector<std::string>& paths) {
+    std::uint64_t index_bytes{};
+    for (const auto& path : paths) index_bytes += 20 + path.size();
+    const auto data_start = 20 + index_bytes;
+
+    std::ofstream output(package, std::ios::binary | std::ios::trunc);
+    output.write("ENR1", 4);
+    write_u32(output, enrage::core::Archive::format_version);
+    write_u32(output, static_cast<std::uint32_t>(paths.size()));
+    write_u64(output, index_bytes);
+
+    std::uint64_t offset = data_start;
+    for (const auto& path : paths) {
+        write_u32(output, static_cast<std::uint32_t>(path.size()));
+        write_u64(output, offset++);
+        write_u64(output, 1);
+        output.write(path.data(), static_cast<std::streamsize>(path.size()));
+    }
+    for (std::size_t index = 0; index < paths.size(); ++index) output.put(static_cast<char>('a' + index));
 }
 
 void rejects_overlapping_payloads() {
@@ -75,6 +99,30 @@ void rejects_overlapping_payloads() {
     output.close();
 
     assert(!enrage::core::Archive::open(package).has_value());
+    std::filesystem::remove_all(root);
+}
+
+void rejects_nonportable_paths() {
+    const auto root = std::filesystem::temp_directory_path() / "enrage-archive-path-test";
+    const auto package = root / "paths.enr";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+
+    write_minimal_archive(package, {"files/data.txt:stream"});
+    assert(!enrage::core::Archive::open(package).has_value());
+
+    write_minimal_archive(package, {"Data.bin", "data.bin"});
+    assert(!enrage::core::Archive::open(package).has_value());
+
+    write_minimal_archive(package, {"data", "data/value.bin"});
+    assert(!enrage::core::Archive::open(package).has_value());
+
+    write_minimal_archive(package, {"files\\plugin.bin"});
+    assert(!enrage::core::Archive::open(package).has_value());
+
+    write_minimal_archive(package, {"files/trailing. "});
+    assert(!enrage::core::Archive::open(package).has_value());
+
     std::filesystem::remove_all(root);
 }
 
@@ -154,6 +202,7 @@ void failed_pack_preserves_previous_destination() {
 
 int main() {
     rejects_overlapping_payloads();
+    rejects_nonportable_paths();
     replaces_existing_archive_transactionally();
     failed_pack_preserves_previous_destination();
     return 0;
