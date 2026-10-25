@@ -83,7 +83,37 @@ int main(int argc, char** argv) {
     assert(runtime.start());
     assert(runtime.extensions_active());
     assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.plugins().tick_callback_count() == 1);
     assert(runtime.overlay().read_text("data/value.txt") == "old");
+
+    // Plugin-level hot reload is finer-grained than a package-set reload. A
+    // corrupt replacement must leave the live shadow generation and VFS state
+    // untouched while recording a precise reload diagnostic.
+    const auto invalid_replacement = root /
+        ("invalid-hot-reload" + plugin_path.extension().string());
+    std::ofstream{invalid_replacement, std::ios::binary | std::ios::trunc}
+        << "not a native plugin";
+    const auto live_shadow = runtime.plugins().plugins()[0].loaded_path;
+    assert(!runtime.reload_plugin("dev.enrage.test", invalid_replacement));
+    assert(has_diagnostic(runtime, enrage::core::DiagnosticCode::plugin_reload_failed));
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.plugins().plugins()[0].loaded_path == live_shadow);
+    assert(runtime.plugins().tick_callback_count() == 1);
+    assert(runtime.overlay().read_text("data/value.txt") == "old");
+    runtime.tick(1.0 / 60.0);
+    std::filesystem::remove(invalid_replacement);
+
+    // A valid reload stages a fresh shadow library and callback set before the
+    // old generation is released. Exactly one generation remains live.
+    const auto old_shadow = runtime.plugins().plugins()[0].loaded_path;
+    assert(runtime.reload_plugin("dev.enrage.test"));
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.plugins().tick_callback_count() == 1);
+    assert(runtime.plugins().plugins()[0].loaded_path != old_shadow);
+    assert(std::filesystem::exists(runtime.plugins().plugins()[0].loaded_path));
+    assert(!std::filesystem::exists(old_shadow));
+    assert(runtime.overlay().read_text("data/value.txt") == "old");
+    runtime.tick(1.0 / 60.0);
 
     const auto original_backing = runtime.loaded_mods().at(0).archive_path;
     assert(std::filesystem::is_regular_file(original_backing));
