@@ -16,6 +16,7 @@ namespace enrage::core {
 
 struct LoadedPlugin {
     std::filesystem::path path;
+    std::filesystem::path loaded_path;
     std::string owner_mod_id;
     std::string id;
     std::string name;
@@ -40,6 +41,9 @@ public:
     PluginHost& operator=(const PluginHost&) = delete;
 
     bool load(const std::filesystem::path& path, std::string_view owner_mod_id = {});
+    bool reload(
+        std::string_view plugin_id,
+        const std::optional<std::filesystem::path>& replacement_path = std::nullopt);
     bool unload(std::string_view plugin_id) noexcept;
     std::size_t unload_mod(std::string_view owner_mod_id) noexcept;
     void unload_all() noexcept;
@@ -60,6 +64,23 @@ private:
         std::string plugin_id;
     };
 
+    struct PreparedPlugin {
+        std::filesystem::path source_path;
+        std::filesystem::path loaded_path;
+        std::string owner_mod_id;
+        std::string id;
+        std::string name;
+        std::string version;
+        const enrage_plugin_descriptor* descriptor{};
+        platform::DynamicLibrary library;
+    };
+
+    [[nodiscard]] std::optional<std::filesystem::path> create_shadow_copy(
+        const std::filesystem::path& source) const;
+    [[nodiscard]] std::optional<PreparedPlugin> prepare_plugin(
+        const std::filesystem::path& source,
+        std::string_view owner_mod_id) const;
+    void cleanup_loaded_path(const std::filesystem::path& path) const noexcept;
     bool unload_index(std::size_t index) noexcept;
     void remove_callbacks(std::string_view owner_mod_id, std::string_view plugin_id) noexcept;
 
@@ -85,6 +106,7 @@ private:
     VirtualFileReader virtual_file_reader_;
     std::string registering_mod_id_;
     std::string registering_plugin_id_;
+    std::vector<TickRegistration>* registration_target_{};
 };
 
 } // namespace enrage::core
