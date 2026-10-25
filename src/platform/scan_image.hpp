@@ -34,6 +34,7 @@ struct ImageResolution {
     std::optional<std::uint32_t> rva;
     std::optional<std::uint64_t> virtual_address;
     std::optional<std::string> region;
+    std::optional<std::size_t> candidate_index;
 };
 
 class ScanImage {
