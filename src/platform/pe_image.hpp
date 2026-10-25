@@ -17,6 +17,10 @@ struct PeSection {
     std::uint32_t raw_size{};
     std::uint32_t raw_offset{};
     std::uint32_t characteristics{};
+
+    [[nodiscard]] bool executable() const noexcept;
+    [[nodiscard]] bool readable() const noexcept;
+    [[nodiscard]] bool writable() const noexcept;
 };
 
 class PeImage {
@@ -35,6 +39,8 @@ public:
     [[nodiscard]] std::optional<std::span<const std::byte>> section_bytes(
         std::span<const std::byte> image,
         std::string_view name) const noexcept;
+    [[nodiscard]] std::optional<std::size_t> rva_to_file_offset(std::uint32_t rva) const noexcept;
+    [[nodiscard]] std::optional<std::uint32_t> file_offset_to_rva(std::size_t offset) const noexcept;
 
 private:
     std::uint16_t machine_{};
