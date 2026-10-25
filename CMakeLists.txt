@@ -106,6 +106,11 @@ if(ENRAGE_BUILD_TESTS)
     target_compile_features(enrage_worker_plugin PRIVATE cxx_std_23)
     set_target_properties(enrage_worker_plugin PROPERTIES PREFIX "")
 
+    add_library(enrage_worker_fault_plugin MODULE tests/worker_fault_plugin.cpp)
+    target_link_libraries(enrage_worker_fault_plugin PRIVATE enrage_sdk Threads::Threads)
+    target_compile_features(enrage_worker_fault_plugin PRIVATE cxx_std_23)
+    set_target_properties(enrage_worker_fault_plugin PROPERTIES PREFIX "")
+
     add_executable(enrage_crash_probe tests/crash_probe.cpp)
     target_include_directories(enrage_crash_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_crash_probe PRIVATE enrage_core)
@@ -243,6 +248,11 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_process_recovery_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_process_recovery_tests)
 
+    add_executable(enrage_worker_process_recovery_tests tests/worker_process_recovery_tests.cpp)
+    target_include_directories(enrage_worker_process_recovery_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_worker_process_recovery_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_worker_process_recovery_tests)
+
     add_test(NAME enrage_sdk_c_tests COMMAND enrage_sdk_c_tests)
     add_test(NAME enrage_tests COMMAND enrage_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_archive_integrity_tests COMMAND enrage_archive_integrity_tests)
@@ -281,6 +291,10 @@ if(ENRAGE_BUILD_TESTS)
         COMMAND enrage_process_recovery_tests
             $<TARGET_FILE:enrage_crash_probe>
             $<TARGET_FILE:enrage_fault_plugin>)
+    add_test(NAME enrage_worker_process_recovery_tests
+        COMMAND enrage_worker_process_recovery_tests
+            $<TARGET_FILE:enrage_crash_probe>
+            $<TARGET_FILE:enrage_worker_fault_plugin>)
 
     set(enrage_regression_tests
         enrage_sdk_c_tests
@@ -309,6 +323,7 @@ if(ENRAGE_BUILD_TESTS)
         enrage_signature_health_tests
         enrage_plugin_execution_tests
         enrage_worker_lifetime_tests
-        enrage_process_recovery_tests)
+        enrage_process_recovery_tests
+        enrage_worker_process_recovery_tests)
     set_tests_properties(${enrage_regression_tests} PROPERTIES TIMEOUT 30)
 endif()
