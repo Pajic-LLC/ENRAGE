@@ -80,6 +80,8 @@ public:
     void set_detailed_execution_observer(DetailedExecutionBegin begin, ExecutionEnd end);
     void set_virtual_file_reader(VirtualFileReader reader);
 
+    [[nodiscard]] static std::optional<PluginExecutionContext> current_execution_context() noexcept;
+
     // plugins() is retained for single-threaded inspection and existing callers.
     // Use snapshot() whenever metadata can be observed concurrently with reloads.
     [[nodiscard]] const std::vector<LoadedPlugin>& plugins() const noexcept;
@@ -217,6 +219,8 @@ private:
     static thread_local std::uint64_t registration_generation_;
     static thread_local std::vector<TickRegistration>* registration_target_;
     static thread_local std::vector<PendingWorker>* registration_worker_target_;
+    static thread_local bool execution_context_active_;
+    static thread_local PluginExecutionContext execution_context_;
 
     enrage_host_api api_{};
     std::atomic<enrage_capability_bits> capabilities_{};
