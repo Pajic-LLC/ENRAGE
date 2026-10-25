@@ -242,24 +242,19 @@ void PluginHost::cancel_staged_workers(
 
 void PluginHost::publish_workers(
     std::vector<std::unique_ptr<WorkerRegistration>>& staged) noexcept {
-    std::vector<WorkerRegistration*> activate;
-    activate.reserve(staged.size());
     {
         std::scoped_lock lock(worker_mutex_);
         for (auto& worker : staged) {
-            activate.push_back(worker.get());
+            auto* registration = worker.get();
             workers_.push_back(std::move(worker));
+            {
+                std::scoped_lock state_lock(registration->state_mutex);
+                registration->start_allowed = true;
+            }
+            registration->state_cv.notify_all();
         }
     }
     staged.clear();
-
-    for (auto* worker : activate) {
-        {
-            std::scoped_lock state_lock(worker->state_mutex);
-            worker->start_allowed = true;
-        }
-        worker->state_cv.notify_all();
-    }
 }
 
 bool PluginHost::stop_workers(
