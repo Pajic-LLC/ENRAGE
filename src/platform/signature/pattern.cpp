@@ -1,6 +1,7 @@
 #include "platform/signature/pattern.hpp"
 
 #include <charconv>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -45,6 +46,20 @@ std::optional<Pattern> Pattern::parse(std::string_view text) {
 
 std::size_t Pattern::size() const noexcept {
     return bytes_.size();
+}
+
+std::string Pattern::text() const {
+    std::ostringstream output;
+    output << std::uppercase << std::hex << std::setfill('0');
+    for (std::size_t index = 0; index < bytes_.size(); ++index) {
+        if (index != 0) output << ' ';
+        if (bytes_[index].wildcard) {
+            output << "??";
+        } else {
+            output << std::setw(2) << static_cast<unsigned>(bytes_[index].value);
+        }
+    }
+    return output.str();
 }
 
 std::optional<std::size_t> Pattern::find(std::span<const std::byte> bytes) const noexcept {
