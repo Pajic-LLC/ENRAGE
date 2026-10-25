@@ -37,24 +37,6 @@ std::optional<std::string> read_text(const std::filesystem::path& path) {
     return output.str();
 }
 
-std::string escape_json(std::string_view input) {
-    std::string out;
-    out.reserve(input.size() + 8);
-    for (const char ch : input) {
-        switch (ch) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b"; break;
-            case '\f': out += "\\f"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default: out.push_back(ch); break;
-        }
-    }
-    return out;
-}
-
 std::vector<std::filesystem::path> sorted_files(
     const std::filesystem::path& directory,
     std::string_view extension) {
@@ -97,32 +79,24 @@ ValidationSymbol resolve_symbol(
 } // namespace
 
 std::string serialize_profile_draft(const ProfileDraft& profile) {
-    const bool has_regions = std::ranges::any_of(profile.symbols, [](const SignatureDraft& symbol) {
-        return symbol.section.has_value() && !symbol.section->empty();
-    });
+    BuildProfile build;
+    build.id = profile.id;
+    build.fingerprint = profile.fingerprint;
+    build.capabilities = profile.capabilities;
+    build.anchors = profile.anchors;
+    build.requirements = profile.requirements;
+    build.symbols.reserve(profile.symbols.size());
 
-    std::ostringstream out;
-    out << "{\n"
-        << "  \"version\": " << (has_regions ? 2 : 1) << ",\n"
-        << "  \"id\": \"" << escape_json(profile.id) << "\",\n"
-        << "  \"fingerprint\": {\"sha256\": \"" << profile.fingerprint.hex()
-        << "\", \"size\": " << profile.fingerprint.size << "},\n"
-        << "  \"capabilities\": " << profile.capabilities << ",\n"
-        << "  \"symbols\": [\n";
-
-    for (std::size_t i = 0; i < profile.symbols.size(); ++i) {
-        const auto& symbol = profile.symbols[i];
-        out << "    {\"name\": \"" << escape_json(symbol.name) << "\"";
-        if (symbol.section && !symbol.section->empty()) {
-            out << ", \"region\": \"" << escape_json(*symbol.section) << "\"";
-        }
-        out << ", \"candidates\": [{\"pattern\": \"" << symbol.pattern
-            << "\", \"adjustment\": " << symbol.adjustment << "}]}";
-        if (i + 1 != profile.symbols.size()) out << ',';
-        out << '\n';
+    for (const auto& draft : profile.symbols) {
+        auto pattern = platform::signature::Pattern::parse(draft.pattern);
+        if (!pattern) return {};
+        platform::signature::SymbolSpec symbol;
+        symbol.name = draft.name;
+        symbol.region = draft.section.value_or(std::string{});
+        symbol.candidates.push_back({std::move(*pattern), draft.adjustment});
+        build.symbols.push_back(std::move(symbol));
     }
-    out << "  ]\n}\n";
-    return out.str();
+    return serialize_build_profile_v3(build);
 }
 
 ValidationReport validate_profile_set_strict(
