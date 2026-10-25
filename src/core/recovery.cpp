@@ -322,7 +322,12 @@ RecoveryManager::RecoveryManager(std::filesystem::path state_root)
       quarantine_path_(state_root_ / "quarantine.list") {}
 
 RecoveryManager::~RecoveryManager() {
-    end_session();
+    // Destruction without end_session() models an interrupted process in the
+    // original recovery contract. Uninstall process-local hooks, but preserve
+    // session/ledger/crash files for the next RecoveryManager to inspect.
+    if (crash_witness_active_) end_crash_witness();
+    session_active_ = false;
+    clear_current_crash_record();
 }
 
 bool RecoveryManager::begin_session(bool force_safe_mode) {
