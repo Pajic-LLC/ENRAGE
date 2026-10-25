@@ -67,7 +67,22 @@ public:
     // plugins() is retained for single-threaded inspection and existing callers.
     // Use snapshot() whenever metadata can be observed concurrently with reloads.
     [[nodiscard]] const std::vector<LoadedPlugin>& plugins() const noexcept;
-    [[nodiscard]] std::vector<PluginSnapshot> snapshot() const;
+    [[nodiscard]] std::vector<PluginSnapshot> snapshot() const {
+        std::scoped_lock lock(lifecycle_mutex_);
+        std::vector<PluginSnapshot> result;
+        result.reserve(plugins_.size());
+        for (const auto& plugin : plugins_) {
+            result.push_back({
+                plugin.path,
+                plugin.loaded_path,
+                plugin.owner_mod_id,
+                plugin.id,
+                plugin.name,
+                plugin.version,
+            });
+        }
+        return result;
+    }
     [[nodiscard]] std::size_t tick_callback_count() const noexcept;
 
 private:
