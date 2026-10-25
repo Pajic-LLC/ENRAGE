@@ -2,11 +2,16 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace enrage::platform {
+class ExecutionJournal;
+}
 
 namespace enrage::core {
 
@@ -56,7 +61,7 @@ private:
     bool load_quarantine();
     bool save_quarantine() const;
     bool write_session_marker() const;
-    bool write_execution_ledger_locked() const;
+    bool write_execution_ledger_locked();
     bool recover_previous_session();
     bool begin_crash_witness();
     void end_crash_witness() noexcept;
@@ -71,6 +76,7 @@ private:
     std::vector<RecoveryBreadcrumb> active_executions_at_crash_;
     std::optional<std::string> suspected_mod_;
     std::optional<RecoveryBreadcrumb> suspected_execution_;
+    std::unique_ptr<platform::ExecutionJournal> execution_journal_;
     mutable std::mutex execution_mutex_;
     bool safe_mode_{};
     bool previous_session_incomplete_{};
