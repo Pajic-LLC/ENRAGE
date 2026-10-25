@@ -4,6 +4,8 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
+#include <vector>
 
 namespace {
 
@@ -45,9 +47,11 @@ int main() {
     assert(overlay.mount_archive("high", high_package, "files", 2));
 
     const auto conflicts = overlay.conflicts();
-    assert(conflicts.size() == 2);
-    assert(conflicts[0].logical_path.generic_string() == "data/clash" ||
-           conflicts[0].logical_path.generic_string() == "data/same.bin");
+    assert(conflicts.size() == 1);
+    assert(conflicts[0].logical_path.generic_string() == "data/same.bin");
+    assert(conflicts[0].mounts.size() == 2);
+    assert(conflicts[0].mounts[0] == "high");
+    assert(conflicts[0].mounts[1] == "low");
 
     assert(overlay.read_text("data/same.bin") == "high");
     assert(!overlay.resolve("data/same.bin").has_value());
