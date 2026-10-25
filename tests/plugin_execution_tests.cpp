@@ -7,8 +7,9 @@
 #include <vector>
 
 int main(int argc, char** argv) {
-    assert(argc == 2);
+    assert(argc == 3);
     const std::filesystem::path plugin_path = argv[1];
+    const std::filesystem::path reject_state_path = argv[2];
 
     enrage::core::PluginHost host;
     host.set_capabilities(ENRAGE_CAPABILITY_TICK);
@@ -46,9 +47,18 @@ int main(int argc, char** argv) {
     assert(host.tick(1.0 / 60.0));
     std::filesystem::remove(invalid_path);
 
-    // Two ticks have run in the old generation. The test plugin rejects a zero
-    // state snapshot, so a successful reload proves the non-empty state was
-    // captured and restored before the generation swap committed.
+    // The replacement has a valid ABI and matching plugin ID, but rejects the
+    // transferred state. The old generation must remain completely live.
+    const auto live_shadow_before_state_rejection = host.plugins()[0].loaded_path;
+    assert(!host.reload("dev.enrage.test", reject_state_path));
+    assert(host.plugins().size() == 1);
+    assert(host.plugins()[0].loaded_path == live_shadow_before_state_rejection);
+    assert(std::filesystem::exists(live_shadow_before_state_rejection));
+    assert(host.tick_callback_count() == 1);
+    assert(host.tick(1.0 / 60.0));
+
+    // Three ticks have run in the old generation. The test plugin rejects a
+    // zero snapshot, so successful reload proves real state crossed generations.
     const auto old_shadow = host.plugins()[0].loaded_path;
     assert(host.reload("dev.enrage.test"));
     assert(host.plugins().size() == 1);
@@ -83,6 +93,16 @@ int main(int argc, char** argv) {
         "end",
         "begin:example.owner:dev.enrage.test:tick",
         "end",
+
+        "begin:example.owner:dev.enrage.test:reload-save-state",
+        "end",
+        "begin:example.owner:dev.enrage.test:reload-load",
+        "end",
+        "begin:example.owner:dev.enrage.test:reload-restore-state",
+        "end",
+        "begin:example.owner:dev.enrage.test:tick",
+        "end",
+
         "begin:example.owner:dev.enrage.test:reload-save-state",
         "end",
         "begin:example.owner:dev.enrage.test:reload-load",
@@ -93,6 +113,7 @@ int main(int argc, char** argv) {
         "end",
         "begin:example.owner:dev.enrage.test:tick",
         "end",
+
         "begin:example.owner:dev.enrage.test:unload",
         "end",
         "begin:example.owner:dev.enrage.test:load",
