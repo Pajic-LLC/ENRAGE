@@ -40,7 +40,7 @@ bool has_temporary_artifact(
          it.increment(error)) {
         if (it->path().filename().string().starts_with(prefix)) return true;
     }
-    return error;
+    return static_cast<bool>(error);
 }
 
 void rejects_overlapping_payloads() {
