@@ -1,6 +1,7 @@
 #include "adapters/null_adapter.hpp"
 #include "adapters/profile_adapter.hpp"
 #include "core/runtime.hpp"
+#include "core/status.hpp"
 #include "enrage/sdk.h"
 
 #include <filesystem>
@@ -58,9 +59,9 @@ std::optional<enrage::adapters::EnvironmentState> parse_environment(std::string_
 
 void usage() {
     std::cerr
-        << "usage: enrage_host [mod-root] [--safe]\n"
+        << "usage: enrage_host [mod-root] [--safe] [--json]\n"
         << "       enrage_host [mod-root] --image <host.exe> --profiles <directory>\n"
-        << "           [--environment unknown|local|restricted] [--safe]\n";
+        << "           [--environment unknown|local|restricted] [--safe] [--json]\n";
 }
 
 } // namespace
@@ -73,11 +74,16 @@ int main(int argc, char** argv) {
     bool environment_set = false;
     bool mod_root_set = false;
     bool force_safe_mode = false;
+    bool json = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument = argv[i];
         if (argument == "--safe") {
             force_safe_mode = true;
+            continue;
+        }
+        if (argument == "--json") {
+            json = true;
             continue;
         }
         if (argument == "--image") {
@@ -147,6 +153,12 @@ int main(int argc, char** argv) {
     if (!runtime.start(force_safe_mode)) {
         std::cerr << "ENRAGE failed to initialize.\n";
         return 1;
+    }
+
+    if (json) {
+        std::cout << enrage::core::runtime_status_json(runtime) << '\n';
+        runtime.stop();
+        return 0;
     }
 
     const auto build = runtime.adapter().build();
