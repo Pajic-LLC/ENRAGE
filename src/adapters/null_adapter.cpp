@@ -13,7 +13,7 @@ bool NullAdapter::probe() {
 }
 
 BuildIdentity NullAdapter::build() const {
-    return {"development", 0};
+    return {"development", std::nullopt};
 }
 
 std::uint64_t NullAdapter::capabilities() const noexcept {
