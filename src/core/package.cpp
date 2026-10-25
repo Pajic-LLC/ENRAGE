@@ -159,14 +159,13 @@ void finalize_archive_mod(
     PackageLoadResult& result,
     LoadedMod mod,
     const Archive& archive,
-    const std::filesystem::path& cache_root) {
+    const std::filesystem::path& package_cache,
+    const std::filesystem::path& stable_archive) {
     const auto content_relative = validated_content_root(result, mod);
     if (!content_relative) return;
 
     const auto content_prefix = content_relative->generic_string();
     if (archive.contains_prefix(content_prefix)) {
-        // Archive mods keep a logical prefix here. Runtime knows the package
-        // kind and mounts this directly from mod.source without extraction.
         mod.content_root = *content_relative;
     } else {
         result.diagnostics.push_back({
@@ -177,10 +176,6 @@ void finalize_archive_mod(
             "content root is not present; this mod will not mount files",
         });
     }
-
-    std::error_code error;
-    std::filesystem::remove_all(cache_root, error);
-    error.clear();
 
     for (const auto& plugin_name : mod.manifest.native_plugins) {
         const auto relative = std::filesystem::path(plugin_name);
@@ -206,7 +201,7 @@ void finalize_archive_mod(
             continue;
         }
 
-        const auto plugin = cache_root / relative;
+        const auto plugin = package_cache / relative;
         if (!archive.extract(relative.generic_string(), plugin)) {
             result.diagnostics.push_back({
                 DiagnosticSeverity::error,
@@ -220,7 +215,8 @@ void finalize_archive_mod(
         mod.native_plugins.push_back(plugin);
     }
 
-    mod.root = cache_root;
+    mod.root = package_cache;
+    mod.archive_path = stable_archive;
     result.mods.push_back(std::move(mod));
 }
 
@@ -234,7 +230,8 @@ PackageLoadResult PackageLoader::load(
     std::error_code error;
     const auto cache_root = state_root / "cache";
     std::filesystem::create_directories(cache_root, error);
-    if (error) {
+    const bool cache_ready = !error;
+    if (!cache_ready) {
         result.diagnostics.push_back({
             DiagnosticSeverity::error,
             DiagnosticCode::archive_extract_failed,
@@ -275,7 +272,41 @@ PackageLoadResult PackageLoader::load(
             continue;
         }
 
-        auto archive = Archive::open(candidate.path);
+        if (!cache_ready) continue;
+
+        const auto package_cache = cache_root / cache_key(candidate.path);
+        std::filesystem::remove_all(package_cache, error);
+        error.clear();
+        std::filesystem::create_directories(package_cache, error);
+        if (error) {
+            result.diagnostics.push_back({
+                DiagnosticSeverity::error,
+                DiagnosticCode::archive_extract_failed,
+                candidate.path,
+                candidate.id,
+                "could not prepare package cache directory",
+            });
+            continue;
+        }
+
+        const auto stable_archive = package_cache / "package.enr";
+        std::filesystem::copy_file(
+            candidate.path,
+            stable_archive,
+            std::filesystem::copy_options::overwrite_existing,
+            error);
+        if (error) {
+            result.diagnostics.push_back({
+                DiagnosticSeverity::error,
+                DiagnosticCode::archive_extract_failed,
+                candidate.path,
+                candidate.id,
+                "could not materialize stable package container",
+            });
+            continue;
+        }
+
+        auto archive = Archive::open(stable_archive);
         if (!archive) {
             result.diagnostics.push_back({
                 DiagnosticSeverity::error,
@@ -314,7 +345,8 @@ PackageLoadResult PackageLoader::load(
             result,
             std::move(mod),
             *archive,
-            cache_root / cache_key(candidate.path));
+            package_cache,
+            stable_archive);
     }
 
     return result;
