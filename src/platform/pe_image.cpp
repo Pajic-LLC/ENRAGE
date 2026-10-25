@@ -2,9 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 
 namespace enrage::platform {
 namespace {
+
+constexpr std::uint32_t section_mem_execute = 0x20000000u;
+constexpr std::uint32_t section_mem_read = 0x40000000u;
+constexpr std::uint32_t section_mem_write = 0x80000000u;
 
 std::optional<std::uint16_t> u16(std::span<const std::byte> bytes, std::size_t offset) {
     if (offset > bytes.size() || bytes.size() - offset < 2) return std::nullopt;
@@ -41,6 +46,10 @@ std::string section_name(std::span<const std::byte> bytes, std::size_t offset) {
 }
 
 } // namespace
+
+bool PeSection::executable() const noexcept { return (characteristics & section_mem_execute) != 0; }
+bool PeSection::readable() const noexcept { return (characteristics & section_mem_read) != 0; }
+bool PeSection::writable() const noexcept { return (characteristics & section_mem_write) != 0; }
 
 std::optional<PeImage> PeImage::parse(std::span<const std::byte> bytes) {
     if (bytes.size() < 0x40 ||
@@ -151,6 +160,31 @@ std::optional<std::span<const std::byte>> PeImage::section_bytes(
     const auto size = static_cast<std::size_t>(section->raw_size);
     if (offset > image.size() || size > image.size() - offset) return std::nullopt;
     return image.subspan(offset, size);
+}
+
+std::optional<std::size_t> PeImage::rva_to_file_offset(std::uint32_t rva) const noexcept {
+    for (const auto& section : sections_) {
+        if (rva < section.virtual_address) continue;
+        const auto delta = static_cast<std::uint64_t>(rva) - section.virtual_address;
+        if (delta >= section.raw_size) continue;
+        const auto offset = static_cast<std::uint64_t>(section.raw_offset) + delta;
+        if (offset > std::numeric_limits<std::size_t>::max()) return std::nullopt;
+        return static_cast<std::size_t>(offset);
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint32_t> PeImage::file_offset_to_rva(std::size_t offset) const noexcept {
+    for (const auto& section : sections_) {
+        const auto raw_start = static_cast<std::uint64_t>(section.raw_offset);
+        const auto raw_end = raw_start + section.raw_size;
+        const auto file_offset = static_cast<std::uint64_t>(offset);
+        if (file_offset < raw_start || file_offset >= raw_end) continue;
+        const auto rva = static_cast<std::uint64_t>(section.virtual_address) + (file_offset - raw_start);
+        if (rva > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
+        return static_cast<std::uint32_t>(rva);
+    }
+    return std::nullopt;
 }
 
 } // namespace enrage::platform
