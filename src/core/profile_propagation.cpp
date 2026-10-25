@@ -105,13 +105,18 @@ AuthoringResult propagate_profile(
     }
     if (!result.errors.empty()) return result;
 
-    return draft_profile(
+    auto drafted = draft_profile(
         reference_image,
         target_image,
         std::move(target_profile_id),
         seeds,
         profile.capabilities,
         options);
+    if (drafted.profile) {
+        drafted.profile->anchors = profile.anchors;
+        drafted.profile->requirements = profile.requirements;
+    }
+    return drafted;
 }
 
 } // namespace enrage::core
