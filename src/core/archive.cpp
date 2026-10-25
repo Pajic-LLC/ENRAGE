@@ -24,6 +24,66 @@ bool safe_logical_path(const std::filesystem::path& path) {
     return true;
 }
 
+bool portable_archive_path(std::string_view path) {
+    if (path.empty() || path.front() == '/' || path.back() == '/') return false;
+
+    std::size_t start{};
+    while (start < path.size()) {
+        const auto end = path.find('/', start);
+        const auto segment = path.substr(
+            start,
+            end == std::string_view::npos ? path.size() - start : end - start);
+        if (segment.empty() || segment == "." || segment == ".." ||
+            segment.back() == '.' || segment.back() == ' ') {
+            return false;
+        }
+
+        for (const unsigned char ch : segment) {
+            if (ch == '\\' || ch == ':' || ch == 0 || ch < 0x20) return false;
+        }
+
+        if (end == std::string_view::npos) break;
+        start = end + 1;
+    }
+    return true;
+}
+
+std::string portable_path_key(std::string_view path) {
+    std::string key{path};
+    for (auto& ch : key) {
+        if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+    }
+    return key;
+}
+
+bool portable_path_set(const std::vector<std::string>& paths) {
+    std::vector<std::string> keys;
+    keys.reserve(paths.size());
+    for (const auto& path : paths) {
+        if (!portable_archive_path(path)) return false;
+        keys.push_back(portable_path_key(path));
+    }
+    std::ranges::sort(keys);
+
+    for (std::size_t index = 1; index < keys.size(); ++index) {
+        if (keys[index - 1] == keys[index]) return false;
+    }
+
+    // Archive entries represent files. A file may not also be the ancestor of
+    // another file (for example "data" plus "data/value.bin"), because that
+    // topology extracts differently across filesystems and cannot be mounted
+    // consistently.
+    for (const auto& key : keys) {
+        auto slash = key.find('/');
+        while (slash != std::string::npos) {
+            const auto ancestor = key.substr(0, slash);
+            if (std::ranges::binary_search(keys, ancestor)) return false;
+            slash = key.find('/', slash + 1);
+        }
+    }
+    return true;
+}
+
 std::string prefix_key(std::string_view prefix) {
     std::string key{prefix};
     while (!key.empty() && key.back() == '/') key.pop_back();
@@ -178,6 +238,8 @@ std::optional<Archive> Archive::open(const std::filesystem::path& path) {
     Archive archive;
     archive.path_ = path;
     archive.entries_.reserve(*count);
+    std::vector<std::string> logical_paths;
+    logical_paths.reserve(*count);
 
     std::uint64_t consumed{};
     for (std::uint32_t i = 0; i < *count; ++i) {
@@ -195,16 +257,20 @@ std::optional<Archive> Archive::open(const std::filesystem::path& path) {
 
         std::string entry_path(*path_length, '\0');
         stream.read(entry_path.data(), static_cast<std::streamsize>(*path_length));
-        if (!stream || !safe_logical_path(std::filesystem::path(entry_path))) return std::nullopt;
+        if (!stream || !portable_archive_path(entry_path) ||
+            !safe_logical_path(std::filesystem::path(entry_path))) {
+            return std::nullopt;
+        }
 
         const auto data_start = header_size + *index_bytes;
         if (*offset < data_start || *offset > file_size || *size > file_size - *offset) return std::nullopt;
 
+        logical_paths.push_back(entry_path);
         archive.entries_.push_back({std::move(entry_path), *offset, *size});
         consumed += index_entry_fixed_size + *path_length;
     }
 
-    if (consumed != *index_bytes) return std::nullopt;
+    if (consumed != *index_bytes || !portable_path_set(logical_paths)) return std::nullopt;
 
     std::ranges::sort(archive.entries_, {}, &ArchiveEntry::path);
     for (std::size_t i = 1; i < archive.entries_.size(); ++i) {
@@ -230,14 +296,22 @@ bool Archive::create(const std::filesystem::path& source_directory, const std::f
 
         const auto relative = std::filesystem::relative(it->path(), source_directory, error);
         if (error || !safe_logical_path(relative)) return false;
+        const auto logical_path = relative.generic_string();
+        if (!portable_archive_path(logical_path)) return false;
+
         const auto raw_size = it->file_size(error);
         if (error || raw_size > std::numeric_limits<std::uint64_t>::max()) return false;
-        entries.push_back({it->path(), relative.generic_string(), static_cast<std::uint64_t>(raw_size)});
+        entries.push_back({it->path(), logical_path, static_cast<std::uint64_t>(raw_size)});
     }
     if (error || entries.empty() || entries.size() > std::numeric_limits<std::uint32_t>::max()) return false;
 
     std::ranges::sort(entries, {}, &SourceEntry::path);
     if (std::ranges::find(entries, std::string{"mod.json"}, &SourceEntry::path) == entries.end()) return false;
+
+    std::vector<std::string> logical_paths;
+    logical_paths.reserve(entries.size());
+    for (const auto& entry : entries) logical_paths.push_back(entry.path);
+    if (!portable_path_set(logical_paths)) return false;
 
     std::uint64_t index_bytes{};
     for (const auto& entry : entries) {
@@ -393,7 +467,7 @@ bool Archive::extract_all(const std::filesystem::path& destination) const {
 
     for (const auto& entry : entries_) {
         const auto relative = std::filesystem::path(entry.path);
-        if (!safe_logical_path(relative)) return false;
+        if (!portable_archive_path(entry.path) || !safe_logical_path(relative)) return false;
         if (!extract(entry.path, destination / relative)) return false;
     }
     return true;
