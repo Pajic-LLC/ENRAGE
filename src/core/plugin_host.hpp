@@ -6,6 +6,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -26,6 +27,7 @@ struct LoadedPlugin {
     std::string id;
     std::string name;
     std::string version;
+    std::uint64_t generation{};
     const enrage_plugin_descriptor* descriptor{};
     platform::DynamicLibrary library;
 };
@@ -37,6 +39,15 @@ struct PluginSnapshot {
     std::string id;
     std::string name;
     std::string version;
+    std::uint64_t generation{};
+};
+
+struct PluginExecutionContext {
+    std::string_view mod_id;
+    std::string_view plugin_id;
+    std::string_view callback;
+    std::uint64_t generation{};
+    std::uint64_t worker_id{};
 };
 
 class PluginHost {
@@ -45,6 +56,7 @@ public:
         std::string_view mod_id,
         std::string_view plugin_id,
         std::string_view callback)>;
+    using DetailedExecutionBegin = std::function<bool(const PluginExecutionContext& context)>;
     using ExecutionEnd = std::function<bool()>;
     using VirtualFileReader = std::function<std::optional<std::vector<std::byte>>(std::string_view)>;
 
@@ -65,6 +77,7 @@ public:
 
     void set_capabilities(enrage_capability_bits capabilities) noexcept;
     void set_execution_observer(ExecutionBegin begin, ExecutionEnd end);
+    void set_detailed_execution_observer(DetailedExecutionBegin begin, ExecutionEnd end);
     void set_virtual_file_reader(VirtualFileReader reader);
 
     // plugins() is retained for single-threaded inspection and existing callers.
@@ -82,6 +95,7 @@ public:
                 plugin.id,
                 plugin.name,
                 plugin.version,
+                plugin.generation,
             });
         }
         return result;
@@ -95,6 +109,7 @@ private:
         void* user_data{};
         std::string owner_mod_id;
         std::string plugin_id;
+        std::uint64_t generation{};
     };
 
     struct PendingWorker {
@@ -104,6 +119,7 @@ private:
         void* user_data{};
         std::string owner_mod_id;
         std::string plugin_id;
+        std::uint64_t generation{};
     };
 
     struct WorkerRegistration {
@@ -113,6 +129,7 @@ private:
         void* user_data{};
         std::string owner_mod_id;
         std::string plugin_id;
+        std::uint64_t generation{};
         std::atomic_bool stop_requested{};
         std::mutex state_mutex;
         std::condition_variable state_cv;
@@ -129,6 +146,7 @@ private:
         std::string id;
         std::string name;
         std::string version;
+        std::uint64_t generation{};
         const enrage_plugin_descriptor* descriptor{};
         platform::DynamicLibrary library;
     };
@@ -146,6 +164,8 @@ private:
     };
 
     [[nodiscard]] bool callback_active_on_this_thread() const noexcept;
+    [[nodiscard]] bool begin_execution(const PluginExecutionContext& context) const;
+    [[nodiscard]] bool end_execution() const;
     [[nodiscard]] std::optional<std::filesystem::path> create_shadow_copy(
         const std::filesystem::path& source) const;
     [[nodiscard]] std::optional<PreparedPlugin> prepare_plugin(
@@ -194,6 +214,7 @@ private:
     static thread_local PluginHost* registration_host_;
     static thread_local std::string registration_mod_id_;
     static thread_local std::string registration_plugin_id_;
+    static thread_local std::uint64_t registration_generation_;
     static thread_local std::vector<TickRegistration>* registration_target_;
     static thread_local std::vector<PendingWorker>* registration_worker_target_;
 
@@ -203,6 +224,7 @@ private:
     std::vector<LoadedPlugin> plugins_;
     std::vector<std::unique_ptr<WorkerRegistration>> workers_;
     ExecutionBegin execution_begin_;
+    DetailedExecutionBegin detailed_execution_begin_;
     ExecutionEnd execution_end_;
     VirtualFileReader virtual_file_reader_;
     mutable std::mutex lifecycle_mutex_;
