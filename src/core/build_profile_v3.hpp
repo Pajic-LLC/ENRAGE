@@ -3,6 +3,7 @@
 #include "core/build_profile_io.hpp"
 
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <string_view>
 
