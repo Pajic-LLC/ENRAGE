@@ -293,6 +293,28 @@ void Runtime::tick(double delta_seconds) {
     if (extensions_active_) deactivate_extensions();
 }
 
+bool Runtime::reload_support() {
+    if (!running_ || recovery_.safe_mode()) return false;
+
+    const bool was_active = extensions_active_;
+    if (was_active) deactivate_extensions();
+
+    if (!adapter_->reload_support()) {
+        if (was_active && adapter_->environment_state() == adapters::EnvironmentState::local) {
+            activate_extensions();
+        }
+        return false;
+    }
+
+    sync_capabilities();
+    sync_health();
+
+    if (adapter_->environment_state() == adapters::EnvironmentState::local) {
+        activate_extensions();
+    }
+    return true;
+}
+
 bool Runtime::running() const noexcept {
     return running_;
 }
