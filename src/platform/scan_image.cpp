@@ -1,11 +1,76 @@
 #include "platform/scan_image.hpp"
 
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <limits>
-#include <set>
+#include <map>
 #include <utility>
 
 namespace enrage::platform {
+namespace {
+
+std::optional<std::int32_t> read_i32_le(
+    std::span<const std::byte> bytes,
+    std::size_t offset) {
+    if (offset > bytes.size() || bytes.size() - offset < 4) return std::nullopt;
+    std::uint32_t raw{};
+    for (std::size_t index = 0; index < 4; ++index) {
+        raw |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(bytes[offset + index])) << (index * 8u);
+    }
+    return std::bit_cast<std::int32_t>(raw);
+}
+
+std::optional<std::int64_t> checked_add(std::int64_t left, std::int64_t right) {
+    if (right > 0 && left > std::numeric_limits<std::int64_t>::max() - right) return std::nullopt;
+    if (right < 0 && left < std::numeric_limits<std::int64_t>::min() - right) return std::nullopt;
+    return left + right;
+}
+
+std::optional<std::uint32_t> candidate_target_rva(
+    const signature::SignatureCandidate& candidate,
+    const ScanRegion& search_region,
+    std::span<const std::byte> search_bytes,
+    std::size_t match) {
+    if (match > search_region.size) return std::nullopt;
+    const auto match_rva = static_cast<std::uint64_t>(search_region.rva) + match;
+    if (match_rva > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
+
+    std::int64_t target{};
+    if (candidate.address_mode == signature::AddressMode::direct) {
+        target = static_cast<std::int64_t>(match_rva);
+    } else {
+        if (candidate.instruction_size == 0 ||
+            candidate.displacement_offset > std::numeric_limits<std::size_t>::max() - match) {
+            return std::nullopt;
+        }
+        const auto displacement_position = match + candidate.displacement_offset;
+        const auto displacement = read_i32_le(search_bytes, displacement_position);
+        if (!displacement || match > std::numeric_limits<std::size_t>::max() - candidate.instruction_size) {
+            return std::nullopt;
+        }
+        const auto instruction_end_local = match + candidate.instruction_size;
+        if (instruction_end_local > search_region.size) return std::nullopt;
+        const auto instruction_end_rva = static_cast<std::uint64_t>(search_region.rva) + instruction_end_local;
+        if (instruction_end_rva > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            return std::nullopt;
+        }
+        auto value = checked_add(
+            static_cast<std::int64_t>(instruction_end_rva),
+            static_cast<std::int64_t>(*displacement));
+        if (!value) return std::nullopt;
+        target = *value;
+    }
+
+    const auto adjusted = checked_add(target, static_cast<std::int64_t>(candidate.adjustment));
+    if (!adjusted || *adjusted < 0 ||
+        static_cast<std::uint64_t>(*adjusted) > std::numeric_limits<std::uint32_t>::max()) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(*adjusted);
+}
+
+} // namespace
 
 std::optional<ScanImage> ScanImage::from_file(std::span<const std::byte> bytes) {
     const auto metadata = PeImage::parse(bytes);
@@ -20,9 +85,7 @@ std::optional<ScanImage> ScanImage::from_file(std::span<const std::byte> bytes) 
     for (const auto& section : metadata->sections()) {
         const auto storage_offset = static_cast<std::size_t>(section.raw_offset);
         const auto size = static_cast<std::size_t>(section.raw_size);
-        if (storage_offset > image.bytes_.size() || size > image.bytes_.size() - storage_offset) {
-            return std::nullopt;
-        }
+        if (storage_offset > image.bytes_.size() || size > image.bytes_.size() - storage_offset) return std::nullopt;
         image.regions_.push_back({
             .name = section.name,
             .storage_offset = storage_offset,
@@ -75,9 +138,7 @@ std::span<const std::byte> ScanImage::bytes() const noexcept { return bytes_; }
 std::optional<std::span<const std::byte>> ScanImage::region_bytes(std::string_view name) const noexcept {
     const auto* found = region(name);
     if (!found) return std::nullopt;
-    if (found->storage_offset > bytes_.size() || found->size > bytes_.size() - found->storage_offset) {
-        return std::nullopt;
-    }
+    if (found->storage_offset > bytes_.size() || found->size > bytes_.size() - found->storage_offset) return std::nullopt;
     return std::span<const std::byte>{bytes_}.subspan(found->storage_offset, found->size);
 }
 
@@ -129,88 +190,76 @@ ImageResolution resolve_in_image(
     std::string_view symbol,
     const ScanImage& image,
     std::optional<std::string_view> requested_region) {
-    const auto make_unique = [&](
-        const ScanRegion& region,
-        std::size_t local_offset,
-        std::optional<std::size_t> candidate_index) {
-        const auto storage_offset = region.storage_offset + local_offset;
-        const auto rva64 = static_cast<std::uint64_t>(region.rva) + local_offset;
-        if (rva64 > std::numeric_limits<std::uint32_t>::max()) {
-            return ImageResolution{.state = signature::ResolutionState::not_found};
-        }
-        const auto rva = static_cast<std::uint32_t>(rva64);
-        return ImageResolution{
-            .state = signature::ResolutionState::unique,
-            .match_count = 1,
-            .storage_offset = storage_offset,
-            .rva = rva,
-            .virtual_address = image.base_address() + rva,
-            .region = region.name,
-            .candidate_index = candidate_index,
-        };
-    };
+    const auto* spec = resolver.spec(symbol);
+    if (!spec) return {};
 
     auto effective_region = requested_region;
-    if (!effective_region) {
-        const auto* symbol_spec = resolver.spec(symbol);
-        if (symbol_spec && !symbol_spec->region.empty()) effective_region = symbol_spec->region;
-    }
+    if (!effective_region && !spec->region.empty()) effective_region = spec->region;
 
+    std::vector<const ScanRegion*> search_regions;
     if (effective_region) {
-        const auto* region = image.region(*effective_region);
-        if (!region) {
-            return {
-                .state = resolver.spec(symbol)
-                    ? signature::ResolutionState::not_found
-                    : signature::ResolutionState::unknown_symbol,
-            };
-        }
-        const auto bytes = image.region_bytes(*effective_region);
-        if (!bytes) return {.state = signature::ResolutionState::not_found};
-        const auto resolution = resolver.resolve(symbol, *bytes);
-        if (resolution.state != signature::ResolutionState::unique || !resolution.offset) {
-            return {
-                .state = resolution.state,
-                .match_count = resolution.match_count,
-                .candidate_index = resolution.candidate_index,
-            };
-        }
-        return make_unique(*region, *resolution.offset, resolution.candidate_index);
+        const auto* found = image.region(*effective_region);
+        if (!found) return {.state = signature::ResolutionState::not_found};
+        search_regions.push_back(found);
+    } else {
+        search_regions.reserve(image.regions().size());
+        for (const auto& region : image.regions()) search_regions.push_back(&region);
     }
 
-    std::set<std::size_t> unique_storage_offsets;
-    std::size_t ambiguous_matches{};
-    bool known_symbol{};
-    std::optional<std::size_t> unique_candidate_index;
+    struct Target {
+        std::uint32_t rva{};
+        std::size_t candidate_index{};
+    };
+    std::map<std::size_t, Target> targets;
 
-    for (const auto& region : image.regions()) {
-        const auto bytes = image.region_bytes(region.name);
-        if (!bytes) continue;
-        const auto resolution = resolver.resolve(symbol, *bytes);
-        if (resolution.state != signature::ResolutionState::unknown_symbol) known_symbol = true;
-        if (resolution.state == signature::ResolutionState::unique && resolution.offset) {
-            unique_storage_offsets.insert(region.storage_offset + *resolution.offset);
-            if (!unique_candidate_index || (resolution.candidate_index && *resolution.candidate_index < *unique_candidate_index)) {
-                unique_candidate_index = resolution.candidate_index;
+    for (const auto* search_region : search_regions) {
+        const auto search_bytes = image.region_bytes(search_region->name);
+        if (!search_bytes) continue;
+
+        for (std::size_t candidate_index = 0; candidate_index < spec->candidates.size(); ++candidate_index) {
+            const auto& candidate = spec->candidates[candidate_index];
+            for (const auto match : candidate.pattern.find_all(*search_bytes)) {
+                const auto target_rva = candidate_target_rva(
+                    candidate,
+                    *search_region,
+                    *search_bytes,
+                    match);
+                if (!target_rva) continue;
+                const auto storage_offset = image.rva_to_storage_offset(*target_rva);
+                if (!storage_offset) continue;
+
+                const auto [it, inserted] = targets.try_emplace(
+                    *storage_offset,
+                    Target{*target_rva, candidate_index});
+                if (!inserted && candidate_index < it->second.candidate_index) {
+                    it->second.candidate_index = candidate_index;
+                }
             }
-        } else if (resolution.state == signature::ResolutionState::ambiguous) {
-            ambiguous_matches += resolution.match_count;
         }
     }
 
-    if (!known_symbol) return {};
-    if (ambiguous_matches != 0 || unique_storage_offsets.size() > 1) {
+    if (targets.empty()) return {.state = signature::ResolutionState::not_found};
+    if (targets.size() != 1) {
         return {
             .state = signature::ResolutionState::ambiguous,
-            .match_count = ambiguous_matches + unique_storage_offsets.size(),
+            .match_count = targets.size(),
         };
     }
-    if (unique_storage_offsets.empty()) return {.state = signature::ResolutionState::not_found};
 
-    const auto storage_offset = *unique_storage_offsets.begin();
-    const auto* region = image.region_for_storage_offset(storage_offset);
-    if (!region) return {.state = signature::ResolutionState::not_found};
-    return make_unique(*region, storage_offset - region->storage_offset, unique_candidate_index);
+    const auto& [storage_offset, target] = *targets.begin();
+    const auto* target_region = image.region_for_rva(target.rva);
+    const auto virtual_address = image.rva_to_virtual_address(target.rva);
+    if (!target_region || !virtual_address) return {.state = signature::ResolutionState::not_found};
+
+    return {
+        .state = signature::ResolutionState::unique,
+        .match_count = 1,
+        .storage_offset = storage_offset,
+        .rva = target.rva,
+        .virtual_address = *virtual_address,
+        .region = target_region->name,
+        .candidate_index = target.candidate_index,
+    };
 }
 
 } // namespace enrage::platform
