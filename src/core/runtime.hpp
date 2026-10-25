@@ -29,6 +29,7 @@ public:
     void stop() noexcept;
     void tick(double delta_seconds);
     bool reload_support();
+    bool reload_mods();
 
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool extensions_active() const noexcept;
@@ -54,6 +55,7 @@ private:
     void sync_capabilities();
     void sync_health(bool initial = false);
     void report_recovery_state_error(std::string message);
+    [[nodiscard]] bool activation_failed_since(std::size_t diagnostic_index) const noexcept;
 
     std::unique_ptr<adapters::Adapter> adapter_;
     ModRegistry mods_;
@@ -65,6 +67,8 @@ private:
     Overlay overlay_;
     PluginHost plugins_;
     adapters::AdapterHealthSnapshot health_;
+    std::filesystem::path active_reload_state_;
+    std::uint64_t reload_generation_{};
     std::uint64_t capabilities_{};
     bool package_set_valid_{};
     bool conflicts_reported_{};
