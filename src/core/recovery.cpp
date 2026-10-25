@@ -1,5 +1,7 @@
 #include "core/recovery.hpp"
 
+#include "core/plugin_host.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -388,6 +390,13 @@ bool RecoveryManager::enter_execution(
     std::uint64_t worker_id) {
     if (!session_active_ || mod_id.empty() || callback.empty() || current_execution_id != 0) {
         return false;
+    }
+
+    if (const auto context = PluginHost::current_execution_context();
+        context && context->mod_id == mod_id && context->plugin_id == plugin_id &&
+        context->callback == callback) {
+        if (generation == 0) generation = context->generation;
+        if (worker_id == 0) worker_id = context->worker_id;
     }
 
     if (current_thread_token == 0) current_thread_token = next_nonzero(thread_sequence);
