@@ -58,6 +58,34 @@ typedef enrage_result (ENRAGE_CALL *enrage_vfs_read_callback)(
     size_t buffer_size,
     size_t* required_size);
 
+/*
+ * Host-managed workers keep native plugin code pinned for the complete worker
+ * lifetime. Workers are registered during plugin load and begin executing only
+ * after that generation becomes live. Before unload/reload the host marks each
+ * worker for stop, calls the optional request_stop callback to wake blocking
+ * work, waits for the worker main callback to return, and only then releases
+ * the generation. request_stop may be called more than once and must be
+ * idempotent. Unknown worker IDs are treated as stop-requested by the host.
+ */
+typedef uint64_t enrage_worker_id;
+#define ENRAGE_WORKER_ID_INVALID 0ull
+
+typedef void (ENRAGE_CALL *enrage_worker_main_callback)(
+    enrage_worker_id worker_id,
+    void* user_data);
+typedef void (ENRAGE_CALL *enrage_worker_request_stop_callback)(
+    enrage_worker_id worker_id,
+    void* user_data);
+typedef enrage_result (ENRAGE_CALL *enrage_start_worker_callback)(
+    void* context,
+    enrage_worker_main_callback main_callback,
+    enrage_worker_request_stop_callback request_stop_callback,
+    void* user_data,
+    enrage_worker_id* worker_id);
+typedef uint32_t (ENRAGE_CALL *enrage_worker_stop_requested_callback)(
+    void* context,
+    enrage_worker_id worker_id);
+
 typedef struct enrage_host_api {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -69,6 +97,10 @@ typedef struct enrage_host_api {
 
     /* Optional ABI-v1 tail. Check struct_size before reading this field. */
     enrage_vfs_read_callback vfs_read;
+
+    /* Optional ABI-v1 host-managed worker extension. */
+    enrage_start_worker_callback start_worker;
+    enrage_worker_stop_requested_callback worker_stop_requested;
 } enrage_host_api;
 
 /* Original ABI-v1 prefix. Older plugins only require fields through register_tick. */
@@ -78,6 +110,10 @@ typedef struct enrage_host_api {
 /* ABI-v1 virtual-file extension. */
 #define ENRAGE_HOST_API_V1_VFS_SIZE \
     (offsetof(enrage_host_api, vfs_read) + sizeof(((enrage_host_api*)0)->vfs_read))
+
+/* ABI-v1 host-managed worker extension. */
+#define ENRAGE_HOST_API_V1_WORKER_SIZE \
+    (offsetof(enrage_host_api, worker_stop_requested) + sizeof(((enrage_host_api*)0)->worker_stop_requested))
 
 typedef enrage_result (ENRAGE_CALL *enrage_plugin_load_callback)(const enrage_host_api* host);
 typedef void (ENRAGE_CALL *enrage_plugin_unload_callback)(void);
