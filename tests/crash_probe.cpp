@@ -6,8 +6,17 @@
 #include <memory>
 #include <string>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 int main(int argc, char** argv) {
     if (argc != 3) return 2;
+
+#ifdef _WIN32
+    SetErrorMode(GetErrorMode() | SEM_NOGPFAULTERRORBOX);
+#endif
 
     const std::filesystem::path root = argv[1];
     const std::filesystem::path plugin = argv[2];
