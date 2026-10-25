@@ -159,6 +159,7 @@ Runtime::~Runtime() {
 }
 
 bool Runtime::start(bool force_safe_mode) {
+    std::scoped_lock lock(runtime_mutex_);
     if (running_ || !adapter_ || !adapter_->probe()) return false;
     if (!recovery_.begin_session(force_safe_mode)) return false;
 
@@ -262,6 +263,7 @@ bool Runtime::start(bool force_safe_mode) {
 }
 
 void Runtime::stop() noexcept {
+    std::scoped_lock lock(runtime_mutex_);
     if (!running_) return;
     deactivate_extensions();
     adapter_->shutdown();
@@ -276,6 +278,7 @@ void Runtime::stop() noexcept {
 }
 
 void Runtime::tick(double delta_seconds) {
+    std::scoped_lock lock(runtime_mutex_);
     if (!running_) return;
 
     if (recovery_.safe_mode()) {
@@ -295,6 +298,7 @@ void Runtime::tick(double delta_seconds) {
 }
 
 bool Runtime::reload_support() {
+    std::scoped_lock lock(runtime_mutex_);
     if (!running_ || recovery_.safe_mode()) return false;
 
     const bool was_active = extensions_active_;
@@ -313,6 +317,7 @@ bool Runtime::reload_support() {
 }
 
 bool Runtime::reload_mods() {
+    std::scoped_lock lock(runtime_mutex_);
     if (!running_ || recovery_.safe_mode()) return false;
 
     ModRegistry candidate_registry{mods_.root()};
@@ -429,8 +434,15 @@ const std::vector<std::string>& Runtime::quarantined_mods() const noexcept { ret
 const std::optional<RecoveryBreadcrumb>& Runtime::suspected_execution() const noexcept { return recovery_.suspected_execution(); }
 const adapters::Adapter& Runtime::adapter() const noexcept { return *adapter_; }
 
-bool Runtime::clear_quarantine(std::string_view mod_id) { return recovery_.clear_quarantine(mod_id); }
-bool Runtime::clear_all_quarantine() { return recovery_.clear_all_quarantine(); }
+bool Runtime::clear_quarantine(std::string_view mod_id) {
+    std::scoped_lock lock(runtime_mutex_);
+    return recovery_.clear_quarantine(mod_id);
+}
+
+bool Runtime::clear_all_quarantine() {
+    std::scoped_lock lock(runtime_mutex_);
+    return recovery_.clear_all_quarantine();
+}
 
 void Runtime::activate_extensions() {
     if (extensions_active_ || !package_set_valid_ || recovery_.safe_mode()) return;
