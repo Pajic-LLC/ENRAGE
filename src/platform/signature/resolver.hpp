@@ -19,9 +19,17 @@ enum class ResolutionState {
     ambiguous,
 };
 
+enum class AddressMode {
+    direct,
+    relative32,
+};
+
 struct SignatureCandidate {
     Pattern pattern;
     std::ptrdiff_t adjustment{};
+    AddressMode address_mode{AddressMode::direct};
+    std::size_t displacement_offset{};
+    std::size_t instruction_size{};
 };
 
 struct SymbolSpec {
