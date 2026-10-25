@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/build_catalog.hpp"
 #include "platform/fingerprint.hpp"
 #include "platform/signature/resolver.hpp"
 
@@ -36,6 +37,8 @@ struct ProfileDraft {
     platform::FileFingerprint fingerprint;
     std::uint64_t capabilities{};
     std::vector<SignatureDraft> symbols;
+    std::vector<ProfileAnchorBinding> anchors;
+    std::vector<ProfileCapabilityRequirement> requirements;
 };
 
 struct AuthoringError {
