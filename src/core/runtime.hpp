@@ -7,6 +7,7 @@
 #include "core/plugin_host.hpp"
 #include "core/recovery.hpp"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -31,6 +32,7 @@ public:
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool extensions_active() const noexcept;
     [[nodiscard]] bool safe_mode() const noexcept;
+    [[nodiscard]] std::uint64_t capabilities() const noexcept;
     [[nodiscard]] const ModRegistry& mods() const noexcept;
     [[nodiscard]] const std::vector<LoadedMod>& loaded_mods() const noexcept;
     [[nodiscard]] const std::vector<Diagnostic>& diagnostics() const noexcept;
@@ -46,6 +48,8 @@ public:
 private:
     void activate_extensions();
     void deactivate_extensions() noexcept;
+    void mount_content();
+    void sync_capabilities();
     void report_recovery_state_error(std::string message);
 
     std::unique_ptr<adapters::Adapter> adapter_;
@@ -57,6 +61,7 @@ private:
     std::vector<std::string> load_order_;
     Overlay overlay_;
     PluginHost plugins_;
+    std::uint64_t capabilities_{};
     bool package_set_valid_{};
     bool conflicts_reported_{};
     bool extensions_active_{};
