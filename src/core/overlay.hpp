@@ -17,12 +17,23 @@ enum class OverlayMountKind {
     archive,
 };
 
+enum class OverlayEntryKind {
+    file,
+    directory,
+};
+
 struct OverlayMount {
     std::string id;
     std::filesystem::path root;
     int priority{};
     OverlayMountKind kind{OverlayMountKind::directory};
     std::filesystem::path prefix;
+};
+
+struct OverlayEntry {
+    std::filesystem::path name;
+    OverlayEntryKind kind{OverlayEntryKind::file};
+    std::string mount_id;
 };
 
 struct OverlayConflict {
@@ -49,11 +60,15 @@ public:
         const std::filesystem::path& logical_path) const;
     [[nodiscard]] std::optional<std::string> read_text(
         const std::filesystem::path& logical_path) const;
+    [[nodiscard]] std::vector<OverlayEntry> list(
+        const std::filesystem::path& logical_directory = {}) const;
     [[nodiscard]] std::vector<OverlayConflict> conflicts() const;
     [[nodiscard]] const std::vector<OverlayMount>& mounts() const noexcept;
 
 private:
     static std::optional<std::filesystem::path> normalize(
+        const std::filesystem::path& logical_path);
+    static std::optional<std::filesystem::path> normalize_directory(
         const std::filesystem::path& logical_path);
     static bool contained_by(
         const std::filesystem::path& root,
