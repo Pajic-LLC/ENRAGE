@@ -47,6 +47,89 @@ std::string recovery_message(const RecoveryBreadcrumb& breadcrumb) {
     return message;
 }
 
+std::string anchor_state_name(adapters::AnchorHealthState state) {
+    switch (state) {
+        case adapters::AnchorHealthState::unresolved: return "unresolved";
+        case adapters::AnchorHealthState::resolved: return "resolved";
+        case adapters::AnchorHealthState::degraded: return "degraded";
+        case adapters::AnchorHealthState::missing: return "missing";
+    }
+    return "unresolved";
+}
+
+DiagnosticSeverity anchor_severity(adapters::AnchorHealthState state) {
+    switch (state) {
+        case adapters::AnchorHealthState::resolved: return DiagnosticSeverity::info;
+        case adapters::AnchorHealthState::degraded: return DiagnosticSeverity::warning;
+        case adapters::AnchorHealthState::missing: return DiagnosticSeverity::warning;
+        case adapters::AnchorHealthState::unresolved: return DiagnosticSeverity::warning;
+    }
+    return DiagnosticSeverity::warning;
+}
+
+std::string capability_name(std::uint64_t capability) {
+    switch (capability) {
+        case ENRAGE_CAPABILITY_TICK: return "tick";
+        case ENRAGE_CAPABILITY_VIRTUAL_FILES: return "virtual-files";
+        case ENRAGE_CAPABILITY_NATIVE_CALLS: return "native-calls";
+        case ENRAGE_CAPABILITY_ASSETS: return "assets";
+        default: return "capability-" + std::to_string(capability);
+    }
+}
+
+std::string join_names(const std::vector<std::string>& names) {
+    std::string result;
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        if (index != 0) result += ", ";
+        result += names[index];
+    }
+    return result;
+}
+
+const adapters::AnchorHealth* find_anchor(
+    const adapters::AdapterHealthSnapshot& snapshot,
+    std::string_view name) {
+    const auto found = std::ranges::find(snapshot.anchors, name, &adapters::AnchorHealth::name);
+    return found == snapshot.anchors.end() ? nullptr : &*found;
+}
+
+const adapters::CapabilityHealth* find_capability(
+    const adapters::AdapterHealthSnapshot& snapshot,
+    std::uint64_t capability) {
+    const auto found = std::ranges::find(
+        snapshot.capabilities,
+        capability,
+        &adapters::CapabilityHealth::capability);
+    return found == snapshot.capabilities.end() ? nullptr : &*found;
+}
+
+std::string anchor_message(const adapters::AnchorHealth& anchor) {
+    std::string message = "anchor " + anchor.name + " is " + anchor_state_name(anchor.state);
+    if (!anchor.reason.empty()) message += ": " + anchor.reason;
+    return message;
+}
+
+std::string capability_message(const adapters::CapabilityHealth& capability) {
+    std::string message = "capability " + capability_name(capability.capability);
+    if (!capability.advertised) {
+        message += " is not advertised by the adapter";
+        return message;
+    }
+    if (!capability.available) {
+        message += " is suppressed";
+        if (!capability.blocking_anchors.empty()) {
+            message += " by " + join_names(capability.blocking_anchors);
+        }
+        return message;
+    }
+    if (!capability.degraded_anchors.empty()) {
+        message += " is available with degraded anchors: " + join_names(capability.degraded_anchors);
+        return message;
+    }
+    message += " is available";
+    return message;
+}
+
 } // namespace
 
 Runtime::Runtime(std::unique_ptr<adapters::Adapter> adapter, std::filesystem::path mod_root)
@@ -94,6 +177,7 @@ bool Runtime::start(bool force_safe_mode) {
     load_order_.clear();
     overlay_.clear();
     plugins_.unload_all();
+    health_ = {};
     capabilities_ = adapter_->capabilities();
     plugins_.set_capabilities(capabilities_);
     package_set_valid_ = false;
@@ -105,6 +189,7 @@ bool Runtime::start(bool force_safe_mode) {
     auto packages = PackageLoader::load(mods_, state_root_);
     loaded_mods_ = std::move(packages.mods);
     diagnostics_ = std::move(packages.diagnostics);
+    sync_health(true);
 
     if (recovery_.previous_session_incomplete()) {
         if (recovery_.suspected_mod()) {
@@ -197,6 +282,7 @@ void Runtime::tick(double delta_seconds) {
 
     if (adapter_->environment_state() == adapters::EnvironmentState::local) {
         sync_capabilities();
+        sync_health();
         if (!extensions_active_) activate_extensions();
         if (extensions_active_ && !plugins_.tick(delta_seconds)) {
             deactivate_extensions();
@@ -221,6 +307,10 @@ bool Runtime::safe_mode() const noexcept {
 
 std::uint64_t Runtime::capabilities() const noexcept {
     return capabilities_;
+}
+
+const adapters::AdapterHealthSnapshot& Runtime::health() const noexcept {
+    return health_;
 }
 
 const ModRegistry& Runtime::mods() const noexcept {
@@ -351,6 +441,52 @@ void Runtime::sync_capabilities() {
     } else if (!had_virtual_files && has_virtual_files) {
         mount_content();
     }
+}
+
+void Runtime::sync_health(bool initial) {
+    auto next = adapter_->health_snapshot();
+
+    for (const auto& anchor : next.anchors) {
+        const auto* previous = find_anchor(health_, anchor.name);
+        const bool changed = !previous ||
+                             previous->state != anchor.state ||
+                             previous->reason != anchor.reason;
+        if (!changed) continue;
+        if (initial && anchor.state == adapters::AnchorHealthState::resolved) continue;
+
+        diagnostics_.push_back({
+            anchor_severity(anchor.state),
+            DiagnosticCode::anchor_health_changed,
+            {},
+            {},
+            anchor_message(anchor),
+        });
+    }
+
+    for (const auto& capability : next.capabilities) {
+        const auto* previous = find_capability(health_, capability.capability);
+        const bool changed = !previous ||
+                             previous->advertised != capability.advertised ||
+                             previous->available != capability.available ||
+                             previous->blocking_anchors != capability.blocking_anchors ||
+                             previous->degraded_anchors != capability.degraded_anchors;
+        if (!changed) continue;
+
+        const bool unhealthy = capability.advertised &&
+                               (!capability.available || !capability.degraded_anchors.empty());
+        if (initial && !unhealthy) continue;
+        if (!capability.advertised && initial) continue;
+
+        diagnostics_.push_back({
+            unhealthy ? DiagnosticSeverity::warning : DiagnosticSeverity::info,
+            DiagnosticCode::capability_health_changed,
+            {},
+            {},
+            capability_message(capability),
+        });
+    }
+
+    health_ = std::move(next);
 }
 
 void Runtime::report_recovery_state_error(std::string message) {
