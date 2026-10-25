@@ -89,7 +89,9 @@ bool compatible_manifest(
     return true;
 }
 
-void finalize_mod(PackageLoadResult& result, LoadedMod mod) {
+std::optional<std::filesystem::path> validated_content_root(
+    PackageLoadResult& result,
+    const LoadedMod& mod) {
     const auto content_relative = std::filesystem::path(mod.manifest.content_root);
     if (!safe_relative(content_relative)) {
         result.diagnostics.push_back({
@@ -99,11 +101,17 @@ void finalize_mod(PackageLoadResult& result, LoadedMod mod) {
             mod.manifest.id,
             "contentRoot must be a safe relative path",
         });
-        return;
+        return std::nullopt;
     }
+    return content_relative;
+}
+
+void finalize_directory_mod(PackageLoadResult& result, LoadedMod mod) {
+    const auto content_relative = validated_content_root(result, mod);
+    if (!content_relative) return;
 
     std::error_code error;
-    const auto content = mod.root / content_relative;
+    const auto content = mod.root / *content_relative;
     if (std::filesystem::is_directory(content, error) && !error) {
         mod.content_root = content;
     } else {
@@ -147,6 +155,75 @@ void finalize_mod(PackageLoadResult& result, LoadedMod mod) {
     result.mods.push_back(std::move(mod));
 }
 
+void finalize_archive_mod(
+    PackageLoadResult& result,
+    LoadedMod mod,
+    const Archive& archive,
+    const std::filesystem::path& cache_root) {
+    const auto content_relative = validated_content_root(result, mod);
+    if (!content_relative) return;
+
+    const auto content_prefix = content_relative->generic_string();
+    if (archive.contains_prefix(content_prefix)) {
+        // Archive mods keep a logical prefix here. Runtime knows the package
+        // kind and mounts this directly from mod.source without extraction.
+        mod.content_root = *content_relative;
+    } else {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::warning,
+            DiagnosticCode::missing_content_root,
+            mod.source,
+            mod.manifest.id,
+            "content root is not present; this mod will not mount files",
+        });
+    }
+
+    std::error_code error;
+    std::filesystem::remove_all(cache_root, error);
+    error.clear();
+
+    for (const auto& plugin_name : mod.manifest.native_plugins) {
+        const auto relative = std::filesystem::path(plugin_name);
+        if (!safe_relative(relative)) {
+            result.diagnostics.push_back({
+                DiagnosticSeverity::error,
+                DiagnosticCode::unsafe_path,
+                mod.source,
+                mod.manifest.id,
+                "native plugin path is not a safe relative path: " + plugin_name,
+            });
+            continue;
+        }
+
+        if (!archive.contains(relative.generic_string())) {
+            result.diagnostics.push_back({
+                DiagnosticSeverity::error,
+                DiagnosticCode::missing_plugin,
+                mod.source,
+                mod.manifest.id,
+                "native plugin is missing: " + plugin_name,
+            });
+            continue;
+        }
+
+        const auto plugin = cache_root / relative;
+        if (!archive.extract(relative.generic_string(), plugin)) {
+            result.diagnostics.push_back({
+                DiagnosticSeverity::error,
+                DiagnosticCode::archive_extract_failed,
+                mod.source,
+                mod.manifest.id,
+                "native plugin extraction failed: " + plugin_name,
+            });
+            continue;
+        }
+        mod.native_plugins.push_back(plugin);
+    }
+
+    mod.root = cache_root;
+    result.mods.push_back(std::move(mod));
+}
+
 } // namespace
 
 PackageLoadResult PackageLoader::load(
@@ -157,6 +234,15 @@ PackageLoadResult PackageLoader::load(
     std::error_code error;
     const auto cache_root = state_root / "cache";
     std::filesystem::create_directories(cache_root, error);
+    if (error) {
+        result.diagnostics.push_back({
+            DiagnosticSeverity::error,
+            DiagnosticCode::archive_extract_failed,
+            state_root,
+            {},
+            "could not create package cache directory",
+        });
+    }
 
     for (const auto& candidate : registry.candidates()) {
         if (!candidate.packaged) {
@@ -185,7 +271,7 @@ PackageLoadResult PackageLoader::load(
             mod.source = candidate.path;
             mod.root = candidate.path;
             mod.manifest = std::move(*parsed.manifest);
-            finalize_mod(result, std::move(mod));
+            finalize_directory_mod(result, std::move(mod));
             continue;
         }
 
@@ -220,26 +306,15 @@ PackageLoadResult PackageLoader::load(
         }
         if (!compatible_manifest(result, candidate.path, *parsed.manifest)) continue;
 
-        const auto extracted_root = cache_root / cache_key(candidate.path);
-        std::filesystem::remove_all(extracted_root, error);
-        error.clear();
-        if (!archive->extract_all(extracted_root)) {
-            result.diagnostics.push_back({
-                DiagnosticSeverity::error,
-                DiagnosticCode::archive_extract_failed,
-                candidate.path,
-                parsed.manifest->id,
-                "archive extraction failed",
-            });
-            continue;
-        }
-
         LoadedMod mod;
         mod.kind = PackageKind::archive;
         mod.source = candidate.path;
-        mod.root = extracted_root;
         mod.manifest = std::move(*parsed.manifest);
-        finalize_mod(result, std::move(mod));
+        finalize_archive_mod(
+            result,
+            std::move(mod),
+            *archive,
+            cache_root / cache_key(candidate.path));
     }
 
     return result;
