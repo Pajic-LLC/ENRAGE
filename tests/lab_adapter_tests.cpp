@@ -3,14 +3,48 @@
 #include "core/runtime.hpp"
 #include "enrage/sdk.h"
 
+#include <algorithm>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
+
+const enrage::adapters::AnchorHealth* find_anchor(
+    const enrage::adapters::AdapterHealthSnapshot& snapshot,
+    std::string_view name) {
+    const auto found = std::ranges::find(snapshot.anchors, name, &enrage::adapters::AnchorHealth::name);
+    return found == snapshot.anchors.end() ? nullptr : &*found;
+}
+
+const enrage::adapters::CapabilityHealth* find_capability(
+    const enrage::adapters::AdapterHealthSnapshot& snapshot,
+    std::uint64_t capability) {
+    const auto found = std::ranges::find(
+        snapshot.capabilities,
+        capability,
+        &enrage::adapters::CapabilityHealth::capability);
+    return found == snapshot.capabilities.end() ? nullptr : &*found;
+}
+
+std::size_t diagnostic_count(
+    const enrage::core::Runtime& runtime,
+    enrage::core::DiagnosticCode code) {
+    return static_cast<std::size_t>(std::ranges::count(runtime.diagnostics(), code, &enrage::core::Diagnostic::code));
+}
+
+bool diagnostic_contains(
+    const enrage::core::Runtime& runtime,
+    enrage::core::DiagnosticCode code,
+    std::string_view text) {
+    return std::ranges::any_of(runtime.diagnostics(), [&](const enrage::core::Diagnostic& diagnostic) {
+        return diagnostic.code == code && diagnostic.message.find(text) != std::string::npos;
+    });
+}
 
 void anchor_requirements_mask_only_affected_capabilities() {
     enrage::adapters::CapabilityMap map;
@@ -30,12 +64,36 @@ void anchor_requirements_mask_only_affected_capabilities() {
                                 ENRAGE_CAPABILITY_ASSETS;
     assert(map.resolve(advertised) == advertised);
 
-    assert(map.set_anchor("scheduler", false));
+    assert(map.set_anchor_state(
+        "scheduler",
+        enrage::adapters::AnchorHealthState::degraded,
+        "fallback signature selected"));
+    assert(map.resolve(advertised) == advertised);
+    auto snapshot = map.snapshot(advertised);
+    const auto* scheduler = find_anchor(snapshot, "scheduler");
+    const auto* tick = find_capability(snapshot, ENRAGE_CAPABILITY_TICK);
+    assert(scheduler);
+    assert(scheduler->state == enrage::adapters::AnchorHealthState::degraded);
+    assert(scheduler->reason == "fallback signature selected");
+    assert(tick);
+    assert(tick->available);
+    assert(tick->degraded_anchors == std::vector<std::string>{"scheduler"});
+
+    assert(map.set_anchor_state(
+        "scheduler",
+        enrage::adapters::AnchorHealthState::missing,
+        "signature not found"));
     auto available = map.resolve(advertised);
     assert((available & ENRAGE_CAPABILITY_TICK) == 0);
     assert((available & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0);
     assert((available & ENRAGE_CAPABILITY_NATIVE_CALLS) != 0);
     assert((available & ENRAGE_CAPABILITY_ASSETS) != 0);
+
+    snapshot = map.snapshot(advertised);
+    tick = find_capability(snapshot, ENRAGE_CAPABILITY_TICK);
+    assert(tick);
+    assert(!tick->available);
+    assert(tick->blocking_anchors == std::vector<std::string>{"scheduler"});
 
     assert(map.set_anchor("virtual-files", false));
     available = map.resolve(advertised);
@@ -135,41 +193,101 @@ void runtime_degrades_capabilities_independently(const std::filesystem::path& pl
     assert(runtime.plugins().plugins().size() == 1);
     assert(runtime.plugins().tick_callback_count() == 1);
     assert(runtime.overlay().resolve("data/value.txt").has_value());
+    assert(runtime.health().anchors.size() == 3);
+    assert(diagnostic_count(runtime, enrage::core::DiagnosticCode::anchor_health_changed) == 0);
     runtime.tick(1.0 / 60.0);
 
-    assert(state->capability_map.set_anchor("scheduler", false));
+    assert(state->capability_map.set_anchor_state(
+        "scheduler",
+        enrage::adapters::AnchorHealthState::degraded,
+        "fallback pattern selected"));
+    runtime.tick(1.0 / 60.0);
+    assert((runtime.capabilities() & ENRAGE_CAPABILITY_TICK) != 0);
+    const auto* scheduler = find_anchor(runtime.health(), "scheduler");
+    const auto* tick = find_capability(runtime.health(), ENRAGE_CAPABILITY_TICK);
+    assert(scheduler && scheduler->state == enrage::adapters::AnchorHealthState::degraded);
+    assert(tick && tick->available);
+    assert(tick->degraded_anchors == std::vector<std::string>{"scheduler"});
+    assert(diagnostic_contains(
+        runtime,
+        enrage::core::DiagnosticCode::anchor_health_changed,
+        "fallback pattern selected"));
+    assert(diagnostic_contains(
+        runtime,
+        enrage::core::DiagnosticCode::capability_health_changed,
+        "available with degraded anchors: scheduler"));
+
+    assert(state->capability_map.set_anchor_state(
+        "scheduler",
+        enrage::adapters::AnchorHealthState::missing,
+        "scheduler signature not found"));
     runtime.tick(1.0 / 60.0);
     assert((runtime.capabilities() & ENRAGE_CAPABILITY_TICK) == 0);
     assert((runtime.capabilities() & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0);
     assert(runtime.plugins().plugins().size() == 1);
     assert(runtime.plugins().tick_callback_count() == 1);
     assert(runtime.overlay().resolve("data/value.txt").has_value());
+    tick = find_capability(runtime.health(), ENRAGE_CAPABILITY_TICK);
+    assert(tick && !tick->available);
+    assert(tick->blocking_anchors == std::vector<std::string>{"scheduler"});
+    assert(diagnostic_contains(
+        runtime,
+        enrage::core::DiagnosticCode::anchor_health_changed,
+        "scheduler signature not found"));
+    assert(diagnostic_contains(
+        runtime,
+        enrage::core::DiagnosticCode::capability_health_changed,
+        "tick is suppressed by scheduler"));
 
-    assert(state->capability_map.set_anchor("virtual-files", false));
+    const auto diagnostics_after_missing = runtime.diagnostics().size();
+    runtime.tick(1.0 / 60.0);
+    assert(runtime.diagnostics().size() == diagnostics_after_missing);
+
+    assert(state->capability_map.set_anchor_state(
+        "virtual-files",
+        enrage::adapters::AnchorHealthState::missing,
+        "overlay hook signature not found"));
     runtime.tick(1.0 / 60.0);
     assert((runtime.capabilities() & ENRAGE_CAPABILITY_VIRTUAL_FILES) == 0);
     assert((runtime.capabilities() & ENRAGE_CAPABILITY_NATIVE_CALLS) != 0);
     assert(runtime.plugins().plugins().size() == 1);
     assert(!runtime.overlay().resolve("data/value.txt").has_value());
 
-    assert(state->capability_map.set_anchor("virtual-files", true));
+    assert(state->capability_map.set_anchor_state(
+        "virtual-files",
+        enrage::adapters::AnchorHealthState::resolved,
+        "replacement signature verified"));
     runtime.tick(1.0 / 60.0);
     assert((runtime.capabilities() & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0);
     assert(runtime.plugins().plugins().size() == 1);
     assert(runtime.overlay().resolve("data/value.txt").has_value());
 
-    assert(state->capability_map.set_anchor("scheduler", true));
+    assert(state->capability_map.set_anchor_state(
+        "scheduler",
+        enrage::adapters::AnchorHealthState::resolved,
+        "replacement signature verified"));
     runtime.tick(1.0 / 60.0);
     assert((runtime.capabilities() & ENRAGE_CAPABILITY_TICK) != 0);
     assert(runtime.plugins().plugins().size() == 1);
+    assert(diagnostic_contains(
+        runtime,
+        enrage::core::DiagnosticCode::capability_health_changed,
+        "tick is available"));
 
-    assert(state->capability_map.set_anchor("native-bridge", false));
+    assert(state->capability_map.set_anchor_state(
+        "native-bridge",
+        enrage::adapters::AnchorHealthState::unresolved,
+        "new build has not been researched"));
     runtime.tick(1.0 / 60.0);
     assert((runtime.capabilities() & ENRAGE_CAPABILITY_NATIVE_CALLS) == 0);
     assert((runtime.capabilities() & ENRAGE_CAPABILITY_TICK) != 0);
     assert((runtime.capabilities() & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0);
     assert(runtime.plugins().plugins().size() == 1);
     assert(runtime.overlay().resolve("data/value.txt").has_value());
+    assert(diagnostic_contains(
+        runtime,
+        enrage::core::DiagnosticCode::anchor_health_changed,
+        "new build has not been researched"));
 
     runtime.stop();
     std::filesystem::remove_all(root);
