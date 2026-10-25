@@ -85,16 +85,13 @@ AuthoringResult propagate_profile(
     }
     if (!result.errors.empty()) return result;
 
-    const auto scan_image = platform::ScanImage::from_file(*reference_bytes);
-    if (!scan_image) {
-        result.errors.push_back({{}, "reference image is not a supported PE image"});
-        return result;
-    }
-
     std::vector<SymbolSeed> seeds;
     seeds.reserve(profile.symbols.size());
     for (const auto& symbol : profile.symbols) {
-        const auto resolution = platform::resolve_in_image(resolver, symbol.name, *scan_image);
+        const auto resolution = platform::resolve_in_file_bytes(
+            resolver,
+            symbol.name,
+            *reference_bytes);
         if (resolution.state != platform::signature::ResolutionState::unique || !resolution.storage_offset) {
             result.errors.push_back({symbol.name, "reference symbol is not uniquely resolvable"});
             continue;
