@@ -112,6 +112,11 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_vfs_integration_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_vfs_integration_tests)
 
+    add_executable(enrage_mod_reload_tests tests/mod_reload_tests.cpp)
+    target_include_directories(enrage_mod_reload_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_mod_reload_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_mod_reload_tests)
+
     add_executable(enrage_fingerprint_tests tests/fingerprint_tests.cpp)
     target_include_directories(enrage_fingerprint_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_fingerprint_tests PRIVATE enrage_core)
@@ -221,6 +226,8 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_tests COMMAND enrage_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_vfs_integration_tests
         COMMAND enrage_vfs_integration_tests $<TARGET_FILE:enrage_vfs_probe_plugin>)
+    add_test(NAME enrage_mod_reload_tests
+        COMMAND enrage_mod_reload_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_fingerprint_tests COMMAND enrage_fingerprint_tests)
     add_test(NAME enrage_pe_tests COMMAND enrage_pe_tests)
     add_test(NAME enrage_environment_tests COMMAND enrage_environment_tests)
