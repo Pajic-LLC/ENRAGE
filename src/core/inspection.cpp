@@ -1,6 +1,6 @@
 #include "core/inspection.hpp"
 
-#include "core/build_profile_io.hpp"
+#include "core/build_profile_v3.hpp"
 #include "platform/fingerprint.hpp"
 #include "platform/pe_image.hpp"
 #include "platform/scan_image.hpp"
@@ -134,7 +134,7 @@ std::optional<InspectionReport> inspect_executable(
 
     if (!profile_directory) return report;
 
-    auto imported = import_build_profiles(*profile_directory);
+    auto imported = import_build_profiles_v3(*profile_directory);
     report.imported_profile_count = imported.catalog.size();
     report.profile_errors.reserve(imported.errors.size());
     for (auto& error : imported.errors) {
