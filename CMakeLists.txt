@@ -84,6 +84,10 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_test_plugin PRIVATE enrage_sdk)
     set_target_properties(enrage_test_plugin PROPERTIES PREFIX "")
 
+    add_library(enrage_state_reject_plugin MODULE tests/state_reject_plugin.cpp)
+    target_link_libraries(enrage_state_reject_plugin PRIVATE enrage_sdk)
+    set_target_properties(enrage_state_reject_plugin PROPERTIES PREFIX "")
+
     add_library(enrage_fault_plugin MODULE tests/fault_plugin.cpp)
     target_link_libraries(enrage_fault_plugin PRIVATE enrage_sdk)
     set_target_properties(enrage_fault_plugin PROPERTIES PREFIX "")
@@ -251,7 +255,9 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_signature_health_tests
         COMMAND enrage_signature_health_tests $<TARGET_FILE:enrage_capability_probe_plugin>)
     add_test(NAME enrage_plugin_execution_tests
-        COMMAND enrage_plugin_execution_tests $<TARGET_FILE:enrage_test_plugin>)
+        COMMAND enrage_plugin_execution_tests
+            $<TARGET_FILE:enrage_test_plugin>
+            $<TARGET_FILE:enrage_state_reject_plugin>)
     add_test(NAME enrage_process_recovery_tests
         COMMAND enrage_process_recovery_tests
             $<TARGET_FILE:enrage_crash_probe>
