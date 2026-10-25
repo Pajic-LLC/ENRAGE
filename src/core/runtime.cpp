@@ -421,7 +421,10 @@ void Runtime::mount_content() {
         });
         if (found == loaded_mods_.end() || found->content_root.empty()) continue;
 
-        if (!overlay_.mount({id, found->content_root, static_cast<int>(index)})) {
+        const bool mounted = found->kind == PackageKind::archive
+            ? overlay_.mount_archive(id, found->source, found->content_root, static_cast<int>(index))
+            : overlay_.mount({id, found->content_root, static_cast<int>(index)});
+        if (!mounted) {
             diagnostics_.push_back({
                 DiagnosticSeverity::error,
                 DiagnosticCode::mount_failed,
