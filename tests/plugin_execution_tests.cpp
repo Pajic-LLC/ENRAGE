@@ -1,9 +1,13 @@
 #include "core/plugin_host.hpp"
 
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 int main(int argc, char** argv) {
@@ -122,5 +126,69 @@ int main(int argc, char** argv) {
         "end",
     };
     assert(events == expected);
+
+    // A tick owns the live generation for the duration of callback dispatch.
+    // A concurrent reload must not reach any reload callback until that tick
+    // exits, otherwise its copied function pointer could outlive the DLL.
+    enrage::core::PluginHost concurrent_host;
+    concurrent_host.set_capabilities(ENRAGE_CAPABILITY_TICK);
+
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    bool tick_entered = false;
+    bool release_tick = false;
+    bool reload_phase_seen = false;
+
+    concurrent_host.set_execution_observer(
+        [&](std::string_view, std::string_view, std::string_view callback) {
+            std::unique_lock gate_lock(gate_mutex);
+            if (callback == "tick") {
+                tick_entered = true;
+                gate_cv.notify_all();
+                gate_cv.wait(gate_lock, [&] { return release_tick; });
+            } else if (callback.starts_with("reload-")) {
+                reload_phase_seen = true;
+                gate_cv.notify_all();
+            }
+            return true;
+        },
+        [] { return true; });
+
+    assert(concurrent_host.load(plugin_path, "example.concurrent"));
+
+    bool tick_result = false;
+    bool reload_result = false;
+    std::thread tick_thread([&] {
+        tick_result = concurrent_host.tick(1.0 / 60.0);
+    });
+
+    {
+        std::unique_lock gate_lock(gate_mutex);
+        gate_cv.wait(gate_lock, [&] { return tick_entered; });
+    }
+
+    std::thread reload_thread([&] {
+        reload_result = concurrent_host.reload("dev.enrage.test");
+    });
+
+    {
+        std::unique_lock gate_lock(gate_mutex);
+        const bool reload_advanced = gate_cv.wait_for(
+            gate_lock,
+            std::chrono::milliseconds{100},
+            [&] { return reload_phase_seen; });
+        assert(!reload_advanced);
+        release_tick = true;
+    }
+    gate_cv.notify_all();
+
+    tick_thread.join();
+    reload_thread.join();
+
+    assert(tick_result);
+    assert(reload_result);
+    assert(reload_phase_seen);
+    assert(concurrent_host.tick_callback_count() == 1);
+    assert(concurrent_host.unload("dev.enrage.test"));
     return 0;
 }
