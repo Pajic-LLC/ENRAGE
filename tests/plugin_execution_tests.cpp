@@ -34,8 +34,6 @@ int main(int argc, char** argv) {
     assert(host.tick_callback_count() == 1);
     assert(host.tick(1.0 / 60.0));
 
-    // A replacement that cannot even become a valid library must never touch
-    // the active generation or its callback registrations.
     const auto invalid_path = plugin_path.parent_path() /
         ("invalid-replacement" + plugin_path.extension().string());
     std::ofstream{invalid_path, std::ios::binary | std::ios::trunc} << "not a dynamic library";
@@ -48,7 +46,9 @@ int main(int argc, char** argv) {
     assert(host.tick(1.0 / 60.0));
     std::filesystem::remove(invalid_path);
 
-    // A valid reload stages its load/callbacks first, then swaps generations.
+    // Two ticks have run in the old generation. The test plugin rejects a zero
+    // state snapshot, so a successful reload proves the non-empty state was
+    // captured and restored before the generation swap committed.
     const auto old_shadow = host.plugins()[0].loaded_path;
     assert(host.reload("dev.enrage.test"));
     assert(host.plugins().size() == 1);
@@ -68,8 +68,6 @@ int main(int argc, char** argv) {
     assert(!std::filesystem::exists(current_shadow));
     assert(host.tick(1.0 / 60.0));
 
-    // Loading again proves the source library remained replaceable and its
-    // owned registrations were fully released by the individual unload path.
     assert(host.load(plugin_path, "example.owner"));
     assert(host.plugins().size() == 1);
     assert(host.tick_callback_count() == 1);
@@ -85,7 +83,11 @@ int main(int argc, char** argv) {
         "end",
         "begin:example.owner:dev.enrage.test:tick",
         "end",
+        "begin:example.owner:dev.enrage.test:reload-save-state",
+        "end",
         "begin:example.owner:dev.enrage.test:reload-load",
+        "end",
+        "begin:example.owner:dev.enrage.test:reload-restore-state",
         "end",
         "begin:example.owner:dev.enrage.test:reload-unload",
         "end",
