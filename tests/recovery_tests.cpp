@@ -1,13 +1,52 @@
 #include "adapters/null_adapter.hpp"
 #include "core/recovery.hpp"
 #include "core/runtime.hpp"
+#include "platform/atomic_file.hpp"
 
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
+#include <string>
 
 namespace {
+
+std::string read_text(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    assert(input);
+    return std::string{
+        std::istreambuf_iterator<char>{input},
+        std::istreambuf_iterator<char>{}};
+}
+
+void atomic_state_replacement_preserves_previous_file_on_failure() {
+    const auto root = std::filesystem::temp_directory_path() / "enrage-atomic-state-test";
+    const auto state = root / "state.dat";
+    std::filesystem::remove_all(root);
+
+    assert(enrage::platform::atomic_replace_file(state, "first"));
+    assert(read_text(state) == "first");
+    assert(enrage::platform::atomic_replace_file(state, "second"));
+    assert(read_text(state) == "second");
+
+    auto temporary = state;
+    temporary += ".tmp";
+    assert(std::filesystem::create_directory(temporary));
+    assert(!enrage::platform::atomic_replace_file(state, "must-not-replace"));
+    assert(read_text(state) == "second");
+    assert(std::filesystem::is_directory(temporary));
+
+    std::filesystem::remove_all(temporary);
+    const auto nested = root / "nested" / "state.dat";
+    assert(enrage::platform::atomic_replace_file(nested, "nested"));
+    assert(read_text(nested) == "nested");
+    auto nested_temporary = nested;
+    nested_temporary += ".tmp";
+    assert(!std::filesystem::exists(nested_temporary));
+
+    std::filesystem::remove_all(root);
+}
 
 void quarantines_mod_active_during_incomplete_session() {
     const auto root = std::filesystem::temp_directory_path() / "enrage-recovery-quarantine-test";
@@ -149,6 +188,7 @@ void runtime_skips_persistently_quarantined_mod() {
 } // namespace
 
 int main() {
+    atomic_state_replacement_preserves_previous_file_on_failure();
     quarantines_mod_active_during_incomplete_session();
     unattributed_incomplete_session_enters_safe_mode();
     explicit_safe_mode_is_one_session_policy();
