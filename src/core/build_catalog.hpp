@@ -10,11 +10,23 @@
 
 namespace enrage::core {
 
+struct ProfileAnchorBinding {
+    std::string name;
+    std::string symbol;
+};
+
+struct ProfileCapabilityRequirement {
+    std::uint64_t capability{};
+    std::vector<std::string> anchors;
+};
+
 struct BuildProfile {
     std::string id;
     platform::FileFingerprint fingerprint;
     std::uint64_t capabilities{};
     std::vector<platform::signature::SymbolSpec> symbols;
+    std::vector<ProfileAnchorBinding> anchors;
+    std::vector<ProfileCapabilityRequirement> requirements;
 };
 
 class BuildCatalog {
