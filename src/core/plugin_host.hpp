@@ -4,13 +4,16 @@
 #include "platform/dynamic_library.hpp"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -84,6 +87,7 @@ public:
         return result;
     }
     [[nodiscard]] std::size_t tick_callback_count() const noexcept;
+    [[nodiscard]] std::size_t worker_count() const noexcept;
 
 private:
     struct TickRegistration {
@@ -91,6 +95,31 @@ private:
         void* user_data{};
         std::string owner_mod_id;
         std::string plugin_id;
+    };
+
+    struct PendingWorker {
+        enrage_worker_id id{ENRAGE_WORKER_ID_INVALID};
+        enrage_worker_main_callback main_callback{};
+        enrage_worker_request_stop_callback request_stop_callback{};
+        void* user_data{};
+        std::string owner_mod_id;
+        std::string plugin_id;
+    };
+
+    struct WorkerRegistration {
+        enrage_worker_id id{ENRAGE_WORKER_ID_INVALID};
+        enrage_worker_main_callback main_callback{};
+        enrage_worker_request_stop_callback request_stop_callback{};
+        void* user_data{};
+        std::string owner_mod_id;
+        std::string plugin_id;
+        std::atomic_bool stop_requested{};
+        std::mutex state_mutex;
+        std::condition_variable state_cv;
+        bool start_allowed{};
+        bool cancel_before_start{};
+        bool finished{};
+        std::thread thread;
     };
 
     struct PreparedPlugin {
@@ -123,8 +152,21 @@ private:
         const std::filesystem::path& source,
         std::string_view owner_mod_id) const;
     void cleanup_loaded_path(const std::filesystem::path& path) const noexcept;
-    bool unload_index(std::size_t index) noexcept;
+    bool unload_index(std::size_t index, bool wait_forever = false) noexcept;
     void remove_callbacks(std::string_view owner_mod_id, std::string_view plugin_id) noexcept;
+
+    [[nodiscard]] bool stage_workers(
+        const std::vector<PendingWorker>& pending,
+        std::vector<std::unique_ptr<WorkerRegistration>>& staged) noexcept;
+    [[nodiscard]] bool reserve_worker_capacity(std::size_t additional) noexcept;
+    void cancel_staged_workers(
+        std::vector<std::unique_ptr<WorkerRegistration>>& staged) noexcept;
+    void publish_workers(
+        std::vector<std::unique_ptr<WorkerRegistration>>& staged) noexcept;
+    [[nodiscard]] bool stop_workers(
+        std::string_view owner_mod_id,
+        std::string_view plugin_id,
+        bool wait_forever) noexcept;
 
     static void ENRAGE_CALL log_thunk(void* context, uint32_t level, const char* message);
     static enrage_capability_bits ENRAGE_CALL capabilities_thunk(void* context);
@@ -138,22 +180,34 @@ private:
         void* buffer,
         std::size_t buffer_size,
         std::size_t* required_size);
+    static enrage_result ENRAGE_CALL start_worker_thunk(
+        void* context,
+        enrage_worker_main_callback main_callback,
+        enrage_worker_request_stop_callback request_stop_callback,
+        void* user_data,
+        enrage_worker_id* worker_id);
+    static uint32_t ENRAGE_CALL worker_stop_requested_thunk(
+        void* context,
+        enrage_worker_id worker_id);
 
     static thread_local const PluginHost* callback_host_;
     static thread_local PluginHost* registration_host_;
     static thread_local std::string registration_mod_id_;
     static thread_local std::string registration_plugin_id_;
     static thread_local std::vector<TickRegistration>* registration_target_;
+    static thread_local std::vector<PendingWorker>* registration_worker_target_;
 
     enrage_host_api api_{};
     std::atomic<enrage_capability_bits> capabilities_{};
     std::vector<TickRegistration> tick_callbacks_;
     std::vector<LoadedPlugin> plugins_;
+    std::vector<std::unique_ptr<WorkerRegistration>> workers_;
     ExecutionBegin execution_begin_;
     ExecutionEnd execution_end_;
     VirtualFileReader virtual_file_reader_;
     mutable std::mutex lifecycle_mutex_;
     mutable std::mutex api_mutex_;
+    mutable std::mutex worker_mutex_;
 };
 
 } // namespace enrage::core
