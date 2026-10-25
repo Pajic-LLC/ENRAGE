@@ -13,7 +13,9 @@ namespace enrage::core {
 namespace {
 
 std::atomic_uint64_t shadow_sequence{};
+std::atomic_uint64_t worker_sequence{1};
 constexpr std::size_t max_reload_state_bytes = 16u * 1024u * 1024u;
+constexpr auto worker_stop_timeout = std::chrono::seconds{1};
 
 bool valid_descriptor(const enrage_plugin_descriptor* descriptor) {
     return descriptor &&
@@ -55,6 +57,7 @@ thread_local PluginHost* PluginHost::registration_host_ = nullptr;
 thread_local std::string PluginHost::registration_mod_id_;
 thread_local std::string PluginHost::registration_plugin_id_;
 thread_local std::vector<PluginHost::TickRegistration>* PluginHost::registration_target_ = nullptr;
+thread_local std::vector<PluginHost::PendingWorker>* PluginHost::registration_worker_target_ = nullptr;
 
 PluginHost::CallbackGuard::CallbackGuard(const PluginHost* host) noexcept
     : previous_(callback_host_) {
@@ -77,6 +80,8 @@ PluginHost::PluginHost() {
     api_.capabilities = &PluginHost::capabilities_thunk;
     api_.register_tick = &PluginHost::register_tick_thunk;
     api_.vfs_read = &PluginHost::vfs_read_thunk;
+    api_.start_worker = &PluginHost::start_worker_thunk;
+    api_.worker_stop_requested = &PluginHost::worker_stop_requested_thunk;
 }
 
 PluginHost::~PluginHost() {
@@ -157,6 +162,161 @@ std::optional<PluginHost::PreparedPlugin> PluginHost::prepare_plugin(
     return prepared;
 }
 
+bool PluginHost::stage_workers(
+    const std::vector<PendingWorker>& pending,
+    std::vector<std::unique_ptr<WorkerRegistration>>& staged) noexcept {
+    try {
+        staged.reserve(pending.size());
+        for (const auto& request : pending) {
+            auto worker = std::make_unique<WorkerRegistration>();
+            worker->id = request.id;
+            worker->main_callback = request.main_callback;
+            worker->request_stop_callback = request.request_stop_callback;
+            worker->user_data = request.user_data;
+            worker->owner_mod_id = request.owner_mod_id;
+            worker->plugin_id = request.plugin_id;
+
+            auto* registration = worker.get();
+            registration->thread = std::thread([this, registration] {
+                {
+                    std::unique_lock state_lock(registration->state_mutex);
+                    registration->state_cv.wait(state_lock, [registration] {
+                        return registration->start_allowed || registration->cancel_before_start;
+                    });
+                    if (registration->cancel_before_start) {
+                        registration->finished = true;
+                        state_lock.unlock();
+                        registration->state_cv.notify_all();
+                        return;
+                    }
+                }
+
+                try {
+                    CallbackGuard callback_guard{this};
+                    registration->main_callback(registration->id, registration->user_data);
+                } catch (...) {
+                    // A plugin exception must not escape the host-owned thread.
+                }
+
+                {
+                    std::scoped_lock state_lock(registration->state_mutex);
+                    registration->finished = true;
+                }
+                registration->state_cv.notify_all();
+            });
+            staged.push_back(std::move(worker));
+        }
+        return true;
+    } catch (...) {
+        cancel_staged_workers(staged);
+        return false;
+    }
+}
+
+bool PluginHost::reserve_worker_capacity(std::size_t additional) noexcept {
+    try {
+        std::scoped_lock lock(worker_mutex_);
+        if (additional > workers_.max_size() - workers_.size()) return false;
+        workers_.reserve(workers_.size() + additional);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void PluginHost::cancel_staged_workers(
+    std::vector<std::unique_ptr<WorkerRegistration>>& staged) noexcept {
+    for (auto& worker : staged) {
+        if (!worker) continue;
+        {
+            std::scoped_lock state_lock(worker->state_mutex);
+            worker->cancel_before_start = true;
+        }
+        worker->state_cv.notify_all();
+    }
+    for (auto& worker : staged) {
+        if (worker && worker->thread.joinable()) worker->thread.join();
+    }
+    staged.clear();
+}
+
+void PluginHost::publish_workers(
+    std::vector<std::unique_ptr<WorkerRegistration>>& staged) noexcept {
+    std::vector<WorkerRegistration*> activate;
+    activate.reserve(staged.size());
+    {
+        std::scoped_lock lock(worker_mutex_);
+        for (auto& worker : staged) {
+            activate.push_back(worker.get());
+            workers_.push_back(std::move(worker));
+        }
+    }
+    staged.clear();
+
+    for (auto* worker : activate) {
+        {
+            std::scoped_lock state_lock(worker->state_mutex);
+            worker->start_allowed = true;
+        }
+        worker->state_cv.notify_all();
+    }
+}
+
+bool PluginHost::stop_workers(
+    std::string_view owner_mod_id,
+    std::string_view plugin_id,
+    bool wait_forever) noexcept {
+    for (const auto& worker : workers_) {
+        if (worker->owner_mod_id == owner_mod_id && worker->plugin_id == plugin_id) {
+            worker->stop_requested.store(true, std::memory_order_release);
+        }
+    }
+
+    for (const auto& worker : workers_) {
+        if (worker->owner_mod_id != owner_mod_id || worker->plugin_id != plugin_id ||
+            !worker->request_stop_callback) {
+            continue;
+        }
+        try {
+            CallbackGuard callback_guard{this};
+            worker->request_stop_callback(worker->id, worker->user_data);
+        } catch (...) {
+            // The stop flag is authoritative; a throwing wake callback does not
+            // permit the generation to unload while its worker is still alive.
+        }
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() + worker_stop_timeout;
+    for (const auto& worker : workers_) {
+        if (worker->owner_mod_id != owner_mod_id || worker->plugin_id != plugin_id) continue;
+
+        std::unique_lock state_lock(worker->state_mutex);
+        if (wait_forever) {
+            worker->state_cv.wait(state_lock, [&worker] { return worker->finished; });
+        } else if (!worker->state_cv.wait_until(
+                       state_lock,
+                       deadline,
+                       [&worker] { return worker->finished; })) {
+            return false;
+        }
+    }
+
+    for (const auto& worker : workers_) {
+        if (worker->owner_mod_id == owner_mod_id && worker->plugin_id == plugin_id &&
+            worker->thread.joinable()) {
+            worker->thread.join();
+        }
+    }
+
+    {
+        std::scoped_lock lock(worker_mutex_);
+        std::erase_if(workers_, [&](const std::unique_ptr<WorkerRegistration>& worker) {
+            return worker->owner_mod_id == owner_mod_id && worker->plugin_id == plugin_id;
+        });
+    }
+    return true;
+}
+
 bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_mod_id) {
     if (callback_active_on_this_thread()) return false;
     std::scoped_lock lock(lifecycle_mutex_);
@@ -179,10 +339,12 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     }
 
     const auto tick_count_before_load = tick_callbacks_.size();
+    std::vector<PendingWorker> pending_workers;
     registration_host_ = this;
     registration_mod_id_ = std::string{owner_mod_id};
     registration_plugin_id_ = prepared->id;
     registration_target_ = nullptr;
+    registration_worker_target_ = &pending_workers;
 
     enrage_result load_result{};
     {
@@ -194,11 +356,26 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     registration_mod_id_.clear();
     registration_plugin_id_.clear();
     registration_target_ = nullptr;
+    registration_worker_target_ = nullptr;
 
     const bool recovery_cleared = !execution_end_ || owner_mod_id.empty() || execution_end_();
     if (load_result != ENRAGE_OK || !recovery_cleared) {
         tick_callbacks_.resize(tick_count_before_load);
         if (load_result == ENRAGE_OK && prepared->descriptor->unload) {
+            CallbackGuard callback_guard{this};
+            prepared->descriptor->unload();
+        }
+        prepared->library.close();
+        cleanup_loaded_path(prepared->loaded_path);
+        return false;
+    }
+
+    std::vector<std::unique_ptr<WorkerRegistration>> staged_workers;
+    if (!stage_workers(pending_workers, staged_workers) ||
+        !reserve_worker_capacity(staged_workers.size())) {
+        cancel_staged_workers(staged_workers);
+        tick_callbacks_.resize(tick_count_before_load);
+        if (prepared->descriptor->unload) {
             CallbackGuard callback_guard{this};
             prepared->descriptor->unload();
         }
@@ -217,6 +394,7 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     loaded.descriptor = prepared->descriptor;
     loaded.library = std::move(prepared->library);
     plugins_.push_back(std::move(loaded));
+    publish_workers(staged_workers);
     return true;
 }
 
@@ -290,6 +468,7 @@ bool PluginHost::reload(
     }
 
     std::vector<TickRegistration> staged_callbacks;
+    std::vector<PendingWorker> pending_workers;
     if (execution_begin_ && !found->owner_mod_id.empty() &&
         !execution_begin_(found->owner_mod_id, found->id, "reload-load")) {
         prepared->library.close();
@@ -301,6 +480,7 @@ bool PluginHost::reload(
     registration_mod_id_ = found->owner_mod_id;
     registration_plugin_id_ = found->id;
     registration_target_ = &staged_callbacks;
+    registration_worker_target_ = &pending_workers;
 
     enrage_result load_result{};
     {
@@ -312,6 +492,7 @@ bool PluginHost::reload(
     registration_mod_id_.clear();
     registration_plugin_id_.clear();
     registration_target_ = nullptr;
+    registration_worker_target_ = nullptr;
 
     const bool load_recovery_cleared =
         !execution_end_ || found->owner_mod_id.empty() || execution_end_();
@@ -357,11 +538,36 @@ bool PluginHost::reload(
         }
     }
 
+    std::vector<std::unique_ptr<WorkerRegistration>> staged_workers;
+    if (!stage_workers(pending_workers, staged_workers) ||
+        !reserve_worker_capacity(staged_workers.size())) {
+        cancel_staged_workers(staged_workers);
+        if (prepared->descriptor->unload) {
+            CallbackGuard callback_guard{this};
+            prepared->descriptor->unload();
+        }
+        prepared->library.close();
+        cleanup_loaded_path(prepared->loaded_path);
+        return false;
+    }
+
     auto& old = plugins_[index];
+    if (!stop_workers(old.owner_mod_id, old.id, false)) {
+        cancel_staged_workers(staged_workers);
+        if (prepared->descriptor->unload) {
+            CallbackGuard callback_guard{this};
+            prepared->descriptor->unload();
+        }
+        prepared->library.close();
+        cleanup_loaded_path(prepared->loaded_path);
+        return false;
+    }
+
     bool old_recovery_cleared = true;
     if (old.descriptor && old.descriptor->unload) {
         if (execution_begin_ && !old.owner_mod_id.empty() &&
             !execution_begin_(old.owner_mod_id, old.id, "reload-unload")) {
+            cancel_staged_workers(staged_workers);
             if (prepared->descriptor->unload) {
                 CallbackGuard callback_guard{this};
                 prepared->descriptor->unload();
@@ -399,6 +605,7 @@ bool PluginHost::reload(
         tick_callbacks_.end(),
         std::make_move_iterator(staged_callbacks.begin()),
         std::make_move_iterator(staged_callbacks.end()));
+    publish_workers(staged_workers);
     cleanup_loaded_path(old_loaded_path);
 
     (void)old_recovery_cleared;
@@ -421,8 +628,7 @@ std::size_t PluginHost::unload_mod(std::string_view owner_mod_id) noexcept {
     std::size_t unloaded{};
     for (std::size_t index = plugins_.size(); index > 0; --index) {
         if (plugins_[index - 1].owner_mod_id != owner_mod_id) continue;
-        (void)unload_index(index - 1);
-        ++unloaded;
+        if (unload_index(index - 1)) ++unloaded;
     }
     return unloaded;
 }
@@ -432,17 +638,18 @@ void PluginHost::unload_all() noexcept {
     std::scoped_lock lock(lifecycle_mutex_);
 
     while (!plugins_.empty()) {
-        (void)unload_index(plugins_.size() - 1);
+        if (!unload_index(plugins_.size() - 1, true)) return;
     }
     tick_callbacks_.clear();
 }
 
-bool PluginHost::unload_index(std::size_t index) noexcept {
+bool PluginHost::unload_index(std::size_t index, bool wait_forever) noexcept {
     if (index >= plugins_.size()) return false;
 
     auto& plugin = plugins_[index];
-    bool callback_ok = true;
+    if (!stop_workers(plugin.owner_mod_id, plugin.id, wait_forever)) return false;
 
+    bool callback_ok = true;
     if (plugin.descriptor && plugin.descriptor->unload) {
         bool execute = true;
         if (execution_begin_ && !plugin.owner_mod_id.empty()) {
@@ -525,6 +732,11 @@ std::size_t PluginHost::tick_callback_count() const noexcept {
     return tick_callbacks_.size();
 }
 
+std::size_t PluginHost::worker_count() const noexcept {
+    std::scoped_lock lock(worker_mutex_);
+    return workers_.size();
+}
+
 void ENRAGE_CALL PluginHost::log_thunk(void*, uint32_t level, const char* message) {
     std::clog << "[ENRAGE:" << level << "] " << (message ? message : "") << '\n';
 }
@@ -594,6 +806,57 @@ enrage_result ENRAGE_CALL PluginHost::vfs_read_thunk(
 
     std::memcpy(buffer, bytes->data(), bytes->size());
     return ENRAGE_OK;
+}
+
+enrage_result ENRAGE_CALL PluginHost::start_worker_thunk(
+    void* context,
+    enrage_worker_main_callback main_callback,
+    enrage_worker_request_stop_callback request_stop_callback,
+    void* user_data,
+    enrage_worker_id* worker_id) {
+    if (!context || !main_callback || !worker_id) return ENRAGE_INVALID_ARGUMENT;
+
+    auto* host = static_cast<PluginHost*>(context);
+    if (registration_host_ != host || registration_plugin_id_.empty() ||
+        !registration_worker_target_) {
+        return ENRAGE_UNSUPPORTED;
+    }
+
+    auto id = worker_sequence.fetch_add(1, std::memory_order_relaxed);
+    if (id == ENRAGE_WORKER_ID_INVALID) {
+        id = worker_sequence.fetch_add(1, std::memory_order_relaxed);
+        if (id == ENRAGE_WORKER_ID_INVALID) return ENRAGE_INTERNAL_ERROR;
+    }
+
+    try {
+        registration_worker_target_->push_back({
+            id,
+            main_callback,
+            request_stop_callback,
+            user_data,
+            registration_mod_id_,
+            registration_plugin_id_,
+        });
+    } catch (...) {
+        return ENRAGE_INTERNAL_ERROR;
+    }
+
+    *worker_id = id;
+    return ENRAGE_OK;
+}
+
+uint32_t ENRAGE_CALL PluginHost::worker_stop_requested_thunk(
+    void* context,
+    enrage_worker_id worker_id) {
+    if (!context || worker_id == ENRAGE_WORKER_ID_INVALID) return 1u;
+
+    auto* host = static_cast<PluginHost*>(context);
+    std::scoped_lock lock(host->worker_mutex_);
+    const auto found = std::ranges::find_if(host->workers_, [worker_id](const auto& worker) {
+        return worker && worker->id == worker_id;
+    });
+    if (found == host->workers_.end()) return 1u;
+    return (*found)->stop_requested.load(std::memory_order_acquire) ? 1u : 0u;
 }
 
 } // namespace enrage::core
