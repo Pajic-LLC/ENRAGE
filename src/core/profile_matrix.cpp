@@ -94,14 +94,7 @@ platform::ImageResolution resolve_symbol(
     const platform::signature::SymbolSpec& symbol,
     const platform::signature::Resolver& resolver,
     const std::vector<std::byte>& bytes) {
-    const auto image = platform::ScanImage::from_file(bytes);
-    if (!image) {
-        return {
-            .state = platform::signature::ResolutionState::not_found,
-            .match_count = 0,
-        };
-    }
-    return platform::resolve_in_image(resolver, symbol.name, *image);
+    return platform::resolve_in_file_bytes(resolver, symbol.name, bytes);
 }
 
 } // namespace
