@@ -125,7 +125,7 @@ if(ENRAGE_BUILD_TESTS)
 
     add_executable(enrage_mod_reload_tests tests/mod_reload_tests.cpp)
     target_include_directories(enrage_mod_reload_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(enrage_mod_reload_tests PRIVATE enrage_core)
+    target_link_libraries(enrage_mod_reload_tests PRIVATE enrage_core Threads::Threads)
     enrage_keep_test_assertions(enrage_mod_reload_tests)
 
     add_executable(enrage_fingerprint_tests tests/fingerprint_tests.cpp)
