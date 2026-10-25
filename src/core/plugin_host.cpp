@@ -106,6 +106,10 @@ void PluginHost::unload_all() noexcept {
 }
 
 bool PluginHost::tick(double delta_seconds) {
+    if ((capabilities_ & ENRAGE_CAPABILITY_TICK) == 0) {
+        return true;
+    }
+
     const auto callbacks = tick_callbacks_;
     for (const auto& registration : callbacks) {
         if (!registration.callback) {
