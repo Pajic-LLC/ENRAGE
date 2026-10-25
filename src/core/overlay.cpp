@@ -1,6 +1,7 @@
 #include "core/overlay.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cwctype>
 #include <fstream>
 #include <limits>
@@ -165,9 +166,21 @@ std::vector<OverlayEntry> Overlay::list(
             const auto archive = archives_.find(mount.id);
             if (archive == archives_.end()) continue;
 
+            if (!normalized->empty()) {
+                const auto exact = archive_entry_path(mount, *normalized);
+                if (exact && archive->second.contains(*exact)) {
+                    // A higher-priority file at the requested logical path
+                    // shadows lower-priority directories of the same name.
+                    return {};
+                }
+            }
+
             std::filesystem::path full_prefix = mount.prefix;
             if (!normalized->empty()) full_prefix /= *normalized;
-            auto prefix = full_prefix.generic_string();
+            const auto directory_prefix = full_prefix.generic_string();
+            if (!archive->second.contains_prefix(directory_prefix)) continue;
+
+            auto prefix = directory_prefix;
             if (!prefix.empty() && prefix.back() != '/') prefix.push_back('/');
 
             for (const auto& entry : archive->second.entries()) {
@@ -194,10 +207,10 @@ std::vector<OverlayEntry> Overlay::list(
         auto physical = mount.root;
         if (!normalized->empty()) physical /= *normalized;
         physical = std::filesystem::weakly_canonical(physical, error);
-        if (error || !contained_by(mount.root, physical) ||
-            !std::filesystem::is_directory(physical, error) || error) {
-            continue;
-        }
+        if (error || !contained_by(mount.root, physical)) continue;
+        if (std::filesystem::is_regular_file(physical, error) && !error) return {};
+        error.clear();
+        if (!std::filesystem::is_directory(physical, error) || error) continue;
 
         for (std::filesystem::directory_iterator it(physical, error), end;
              !error && it != end;
