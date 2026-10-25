@@ -13,7 +13,7 @@ namespace enrage::adapters {
 
 struct LabState {
     std::string adapter_name{"ENRAGE Lab"};
-    BuildIdentity build{"lab.1", 1};
+    BuildIdentity build{"lab.1", std::nullopt};
     std::uint64_t capability_bits{};
     CapabilityMap capability_map;
     EnvironmentState environment{EnvironmentState::unknown};
