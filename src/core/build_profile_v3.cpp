@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <sstream>
@@ -260,24 +261,35 @@ bool parse_fingerprint(const JsonValue& value, platform::FileFingerprint& output
 
 bool parse_candidates(
     const JsonValue& value,
+    std::uint64_t version,
     std::vector<platform::signature::SignatureCandidate>& output,
     SchemaError& error) {
     if (value.kind != JsonKind::array || value.array.empty()) {
         error.message = "symbol candidates must be a non-empty array";
         return false;
     }
+
     for (const auto& item : value.array) {
-        if (item.kind != JsonKind::object || !only_fields(item, {"pattern", "adjustment"}, error)) return false;
+        if (item.kind != JsonKind::object ||
+            !only_fields(item, {"pattern", "adjustment", "mode", "displacementOffset", "instructionSize"}, error)) {
+            return false;
+        }
+
         const auto* pattern_text = as_string(field(item, "pattern", error));
+        const auto* mode_value = field(item, "mode", error);
+        const auto* displacement_value = field(item, "displacementOffset", error);
+        const auto* instruction_size_value = field(item, "instructionSize", error);
         if (!error.message.empty() || !pattern_text) {
             error.message = error.message.empty() ? "candidate pattern must be a string" : error.message;
             return false;
         }
+
         auto pattern = platform::signature::Pattern::parse(*pattern_text);
         if (!pattern) {
             error.message = "invalid signature pattern";
             return false;
         }
+
         std::ptrdiff_t adjustment{};
         if (const auto* adjustment_value = field(item, "adjustment", error)) {
             const auto parsed = as_i64(adjustment_value);
@@ -289,13 +301,62 @@ bool parse_candidates(
             adjustment = static_cast<std::ptrdiff_t>(*parsed);
         }
         if (!error.message.empty()) return false;
-        output.push_back({std::move(*pattern), adjustment});
+
+        platform::signature::AddressMode mode = platform::signature::AddressMode::direct;
+        if (mode_value) {
+            const auto* text = as_string(mode_value);
+            if (!text || (*text != "direct" && *text != "relative32")) {
+                error.message = "candidate mode must be direct or relative32";
+                return false;
+            }
+            mode = *text == "relative32"
+                ? platform::signature::AddressMode::relative32
+                : platform::signature::AddressMode::direct;
+        }
+
+        const bool has_transform_fields = mode_value || displacement_value || instruction_size_value;
+        if (has_transform_fields && version < 4) {
+            error.message = "candidate address transforms require profile version 4";
+            return false;
+        }
+
+        std::size_t displacement_offset{};
+        std::size_t instruction_size{};
+        if (mode == platform::signature::AddressMode::relative32) {
+            const auto displacement = as_u64(displacement_value);
+            const auto instruction = as_u64(instruction_size_value);
+            if (!displacement || !instruction ||
+                *displacement > std::numeric_limits<std::size_t>::max() ||
+                *instruction > std::numeric_limits<std::size_t>::max()) {
+                error.message = "relative32 candidate requires displacementOffset and instructionSize";
+                return false;
+            }
+            displacement_offset = static_cast<std::size_t>(*displacement);
+            instruction_size = static_cast<std::size_t>(*instruction);
+            if (instruction_size == 0 || displacement_offset > instruction_size ||
+                instruction_size - displacement_offset < 4) {
+                error.message = "relative32 displacement must fit inside the instruction";
+                return false;
+            }
+        } else if (displacement_value || instruction_size_value) {
+            error.message = "direct candidate cannot define relative32 transform fields";
+            return false;
+        }
+
+        output.push_back({
+            std::move(*pattern),
+            adjustment,
+            mode,
+            displacement_offset,
+            instruction_size,
+        });
     }
     return true;
 }
 
 bool parse_symbols(
     const JsonValue& value,
+    std::uint64_t version,
     std::vector<platform::signature::SymbolSpec>& output,
     SchemaError& error) {
     if (value.kind != JsonKind::array) {
@@ -324,7 +385,7 @@ bool parse_symbols(
             }
             symbol.region = *region;
         }
-        if (!error.message.empty() || !parse_candidates(*candidates, symbol.candidates, error)) return false;
+        if (!error.message.empty() || !parse_candidates(*candidates, version, symbol.candidates, error)) return false;
         output.push_back(std::move(symbol));
     }
     return true;
@@ -443,6 +504,14 @@ std::optional<std::string> read_text(const std::filesystem::path& path) {
     return output.str();
 }
 
+bool profile_has_transforms(const BuildProfile& profile) {
+    return std::ranges::any_of(profile.symbols, [](const auto& symbol) {
+        return std::ranges::any_of(symbol.candidates, [](const auto& candidate) {
+            return candidate.address_mode != platform::signature::AddressMode::direct;
+        });
+    });
+}
+
 } // namespace
 
 BuildProfileParseResult parse_build_profile_v3(std::string_view json, std::filesystem::path source) {
@@ -463,9 +532,11 @@ BuildProfileParseResult parse_build_profile_v3(std::string_view json, std::files
     const auto* fingerprint = field(*root, "fingerprint", error);
     const auto capabilities = as_u64(field(*root, "capabilities", error));
     const auto* symbols = field(*root, "symbols", error);
-    if (!error.message.empty() || !version || *version < 1 || *version > 3 || !id || id->empty() ||
+    if (!error.message.empty() || !version || *version < 1 || *version > 4 || !id || id->empty() ||
         !fingerprint || !capabilities || !symbols) {
-        const auto message = !error.message.empty() ? error.message : "profile requires version 1-3, id, fingerprint, capabilities, and symbols";
+        const auto message = !error.message.empty()
+            ? error.message
+            : "profile requires version 1-4, id, fingerprint, capabilities, and symbols";
         return {.error = BuildProfileError{std::move(source), message, 0}};
     }
 
@@ -473,7 +544,7 @@ BuildProfileParseResult parse_build_profile_v3(std::string_view json, std::files
     profile.id = *id;
     profile.capabilities = *capabilities;
     if (!parse_fingerprint(*fingerprint, profile.fingerprint, error) ||
-        !parse_symbols(*symbols, profile.symbols, error)) {
+        !parse_symbols(*symbols, *version, profile.symbols, error)) {
         return {.error = BuildProfileError{std::move(source), error.message, 0}};
     }
 
@@ -530,7 +601,8 @@ BuildProfileImportResult import_build_profiles_v3(const std::filesystem::path& d
 std::string serialize_build_profile_v3(const BuildProfile& profile) {
     const bool topology = !profile.anchors.empty() || !profile.requirements.empty();
     const bool regions = std::ranges::any_of(profile.symbols, [](const auto& symbol) { return !symbol.region.empty(); });
-    const int version = topology ? 3 : (regions ? 2 : 1);
+    const bool transforms = profile_has_transforms(profile);
+    const int version = transforms ? 4 : (topology ? 3 : (regions ? 2 : 1));
 
     std::ostringstream out;
     out << "{\n"
@@ -549,7 +621,13 @@ std::string serialize_build_profile_v3(const BuildProfile& profile) {
         for (std::size_t candidate_index = 0; candidate_index < symbol.candidates.size(); ++candidate_index) {
             const auto& candidate = symbol.candidates[candidate_index];
             out << "{\"pattern\": \"" << candidate.pattern.text() << "\", \"adjustment\": "
-                << candidate.adjustment << "}";
+                << candidate.adjustment;
+            if (candidate.address_mode == platform::signature::AddressMode::relative32) {
+                out << ", \"mode\": \"relative32\", \"displacementOffset\": "
+                    << candidate.displacement_offset
+                    << ", \"instructionSize\": " << candidate.instruction_size;
+            }
+            out << "}";
             if (candidate_index + 1 != symbol.candidates.size()) out << ", ";
         }
         out << "]}";
