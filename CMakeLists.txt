@@ -256,4 +256,32 @@ if(ENRAGE_BUILD_TESTS)
         COMMAND enrage_process_recovery_tests
             $<TARGET_FILE:enrage_crash_probe>
             $<TARGET_FILE:enrage_fault_plugin>)
+
+    set(enrage_regression_tests
+        enrage_sdk_c_tests
+        enrage_tests
+        enrage_vfs_integration_tests
+        enrage_mod_reload_tests
+        enrage_fingerprint_tests
+        enrage_pe_tests
+        enrage_environment_tests
+        enrage_overlay_tests
+        enrage_build_profile_tests
+        enrage_profile_v3_tests
+        enrage_profile_adapter_tests
+        enrage_image_provider_tests
+        enrage_profile_reload_tests
+        enrage_recovery_tests
+        enrage_recovery_compat_tests
+        enrage_inspection_tests
+        enrage_profile_authoring_tests
+        enrage_profile_matrix_tests
+        enrage_profile_propagation_tests
+        enrage_profile_support_tests
+        enrage_scan_image_tests
+        enrage_lab_adapter_tests
+        enrage_signature_health_tests
+        enrage_plugin_execution_tests
+        enrage_process_recovery_tests)
+    set_tests_properties(${enrage_regression_tests} PROPERTIES TIMEOUT 30)
 endif()
