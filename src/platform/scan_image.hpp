@@ -72,4 +72,12 @@ private:
     const ScanImage& image,
     std::optional<std::string_view> region = std::nullopt);
 
+// Resolve directly from bytes read from a file. Valid PE images use section/RVA
+// semantics; non-PE research inputs fall back to generic storage offsets when
+// the symbol has no section constraint.
+[[nodiscard]] ImageResolution resolve_in_file_bytes(
+    const signature::Resolver& resolver,
+    std::string_view symbol,
+    std::span<const std::byte> bytes);
+
 } // namespace enrage::platform
