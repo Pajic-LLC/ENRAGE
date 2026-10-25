@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <sstream>
@@ -20,7 +21,12 @@ std::optional<std::vector<std::byte>> read_bytes(const std::filesystem::path& pa
     if (!input) return std::nullopt;
     const auto end = input.tellg();
     if (end < 0) return std::nullopt;
-    const auto size = static_cast<std::size_t>(end);
+    const auto raw_size = static_cast<std::uint64_t>(end);
+    if (raw_size > std::numeric_limits<std::size_t>::max() ||
+        raw_size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
+        return std::nullopt;
+    }
+    const auto size = static_cast<std::size_t>(raw_size);
     std::vector<std::byte> bytes(size);
     input.seekg(0, std::ios::beg);
     if (size != 0) input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
@@ -84,7 +90,7 @@ struct ImageData {
     std::vector<std::byte> bytes;
 };
 
-platform::ImageResolution resolve_scoped(
+platform::ImageResolution resolve_symbol(
     const platform::signature::SymbolSpec& symbol,
     const platform::signature::Resolver& resolver,
     const std::vector<std::byte>& bytes) {
@@ -172,19 +178,7 @@ ProfileMatrixReport build_profile_matrix(
             };
             row.cells.reserve(images.size());
             for (const auto& image : images) {
-                if (symbol.region.empty()) {
-                    const auto resolution = resolver.resolve(symbol.name, image.bytes);
-                    row.cells.push_back({
-                        .image = image.path,
-                        .expected = image.fingerprint == profile.fingerprint,
-                        .state = resolution.state,
-                        .match_count = resolution.match_count,
-                        .offset = resolution.offset,
-                    });
-                    continue;
-                }
-
-                const auto resolution = resolve_scoped(symbol, resolver, image.bytes);
+                const auto resolution = resolve_symbol(symbol, resolver, image.bytes);
                 row.cells.push_back({
                     .image = image.path,
                     .expected = image.fingerprint == profile.fingerprint,
