@@ -29,12 +29,31 @@ int main(int argc, char** argv) {
     assert(host.plugins()[0].owner_mod_id == "example.owner");
     assert(host.tick_callback_count() == 1);
     assert(host.tick(1.0 / 60.0));
-    host.unload_all();
+
+    assert(!host.unload("missing.plugin"));
+    assert(host.unload("dev.enrage.test"));
+    assert(host.plugins().empty());
+    assert(host.tick_callback_count() == 0);
+    assert(host.tick(1.0 / 60.0));
+
+    // Loading again proves the dynamic library and its owned registrations were
+    // fully released by the individual unload path.
+    assert(host.load(plugin_path, "example.owner"));
+    assert(host.plugins().size() == 1);
+    assert(host.tick_callback_count() == 1);
+    assert(host.unload_mod("other.owner") == 0);
+    assert(host.unload_mod("example.owner") == 1);
+    assert(host.plugins().empty());
+    assert(host.tick_callback_count() == 0);
 
     const std::vector<std::string> expected{
         "begin:example.owner:dev.enrage.test:load",
         "end",
         "begin:example.owner:dev.enrage.test:tick",
+        "end",
+        "begin:example.owner:dev.enrage.test:unload",
+        "end",
+        "begin:example.owner:dev.enrage.test:load",
         "end",
         "begin:example.owner:dev.enrage.test:unload",
         "end",
