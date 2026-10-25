@@ -145,7 +145,7 @@ if(ENRAGE_BUILD_TESTS)
 
     add_executable(enrage_overlay_tests tests/overlay_tests.cpp)
     target_include_directories(enrage_overlay_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(enrage_overlay_tests PRIVATE enrage_core)
+    target_link_libraries(enrage_overlay_tests PRIVATE enrage_core Threads::Threads)
     enrage_keep_test_assertions(enrage_overlay_tests)
 
     add_executable(enrage_build_profile_tests tests/build_profile_tests.cpp)
