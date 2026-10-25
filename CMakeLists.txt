@@ -28,6 +28,7 @@ add_library(enrage_core STATIC
     src/core/runtime.cpp
     src/core/status.cpp
     src/platform/dynamic_library.cpp
+    src/platform/execution_journal.cpp
     src/platform/fingerprint.cpp
     src/platform/pe_image.cpp
     src/platform/scan_image.cpp
@@ -188,6 +189,11 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_recovery_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_recovery_tests)
 
+    add_executable(enrage_execution_journal_tests tests/execution_journal_tests.cpp)
+    target_include_directories(enrage_execution_journal_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_execution_journal_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_execution_journal_tests)
+
     add_executable(enrage_recovery_compat_tests tests/recovery_compat_tests.cpp)
     target_include_directories(enrage_recovery_compat_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_recovery_compat_tests PRIVATE enrage_core)
@@ -270,6 +276,7 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_image_provider_tests COMMAND enrage_image_provider_tests)
     add_test(NAME enrage_profile_reload_tests COMMAND enrage_profile_reload_tests)
     add_test(NAME enrage_recovery_tests COMMAND enrage_recovery_tests)
+    add_test(NAME enrage_execution_journal_tests COMMAND enrage_execution_journal_tests)
     add_test(NAME enrage_recovery_compat_tests COMMAND enrage_recovery_compat_tests)
     add_test(NAME enrage_inspection_tests COMMAND enrage_inspection_tests)
     add_test(NAME enrage_profile_authoring_tests COMMAND enrage_profile_authoring_tests)
@@ -312,6 +319,7 @@ if(ENRAGE_BUILD_TESTS)
         enrage_image_provider_tests
         enrage_profile_reload_tests
         enrage_recovery_tests
+        enrage_execution_journal_tests
         enrage_recovery_compat_tests
         enrage_inspection_tests
         enrage_profile_authoring_tests
