@@ -75,6 +75,7 @@ std::string_view diagnostic_code_name(DiagnosticCode value) {
         case DiagnosticCode::dependency_error: return "dependency_error";
         case DiagnosticCode::mount_failed: return "mount_failed";
         case DiagnosticCode::plugin_load_failed: return "plugin_load_failed";
+        case DiagnosticCode::plugin_reload_failed: return "plugin_reload_failed";
         case DiagnosticCode::file_conflict: return "file_conflict";
         case DiagnosticCode::recovery_state_error: return "recovery_state_error";
         case DiagnosticCode::recovery_safe_mode: return "recovery_safe_mode";
