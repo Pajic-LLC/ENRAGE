@@ -27,6 +27,15 @@ struct LoadedPlugin {
     platform::DynamicLibrary library;
 };
 
+struct PluginSnapshot {
+    std::filesystem::path path;
+    std::filesystem::path loaded_path;
+    std::string owner_mod_id;
+    std::string id;
+    std::string name;
+    std::string version;
+};
+
 class PluginHost {
 public:
     using ExecutionBegin = std::function<bool(
@@ -55,7 +64,10 @@ public:
     void set_execution_observer(ExecutionBegin begin, ExecutionEnd end);
     void set_virtual_file_reader(VirtualFileReader reader);
 
+    // plugins() is retained for single-threaded inspection and existing callers.
+    // Use snapshot() whenever metadata can be observed concurrently with reloads.
     [[nodiscard]] const std::vector<LoadedPlugin>& plugins() const noexcept;
+    [[nodiscard]] std::vector<PluginSnapshot> snapshot() const;
     [[nodiscard]] std::size_t tick_callback_count() const noexcept;
 
 private:
