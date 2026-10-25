@@ -1,51 +1,25 @@
 #include "adapters/profile_adapter.hpp"
 
 #include "core/build_profile_v3.hpp"
-#include "platform/scan_image.hpp"
 
-#include <cstddef>
-#include <cstdint>
-#include <fstream>
-#include <limits>
 #include <utility>
-#include <vector>
 
 namespace enrage::adapters {
-namespace {
-
-std::optional<std::vector<std::byte>> read_bytes(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary | std::ios::ate);
-    if (!input) return std::nullopt;
-    const auto end = input.tellg();
-    if (end < 0) return std::nullopt;
-    const auto size = static_cast<std::uint64_t>(end);
-    if (size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
-        return std::nullopt;
-    }
-    std::vector<std::byte> bytes(static_cast<std::size_t>(size));
-    input.seekg(0, std::ios::beg);
-    if (!bytes.empty()) {
-        input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-        if (!input) return std::nullopt;
-    }
-    return bytes;
-}
-
-std::uint64_t fingerprint_summary(const platform::FileFingerprint& fingerprint) noexcept {
-    std::uint64_t value{};
-    for (std::size_t index = 0; index < sizeof(value); ++index) {
-        value |= static_cast<std::uint64_t>(fingerprint.sha256[index]) << (index * 8u);
-    }
-    return value;
-}
-
-} // namespace
 
 ProfileAdapter::ProfileAdapter(
     std::filesystem::path image,
     std::filesystem::path profile_directory,
     EnvironmentState environment)
-    : image_(std::move(image)),
+    : ProfileAdapter(
+          std::make_unique<FileImageProvider>(std::move(image)),
+          std::move(profile_directory),
+          environment) {}
+
+ProfileAdapter::ProfileAdapter(
+    std::unique_ptr<ImageProvider> image_provider,
+    std::filesystem::path profile_directory,
+    EnvironmentState environment)
+    : image_provider_(std::move(image_provider)),
       profile_directory_(std::move(profile_directory)),
       requested_environment_(environment) {}
 
@@ -53,8 +27,79 @@ std::string_view ProfileAdapter::name() const noexcept {
     return "profile";
 }
 
-void ProfileAdapter::reset_probe_state() {
-    build_ = {"unknown", 0};
+void ProfileAdapter::set_profile_health(
+    SupportState& state,
+    AnchorHealthState health,
+    std::string reason) {
+    state.health.anchors.clear();
+    state.health.capabilities.clear();
+    state.health.anchors.push_back({"profile", health, std::move(reason)});
+}
+
+std::optional<ProfileAdapter::SupportState> ProfileAdapter::evaluate_support() const {
+    if (!image_provider_) return std::nullopt;
+
+    const auto fingerprint = image_provider_->identity();
+    const auto image = image_provider_->scan_image();
+    if (!fingerprint || !image) return std::nullopt;
+
+    SupportState state;
+    state.fingerprint = *fingerprint;
+    state.build.fingerprint = *fingerprint;
+
+    auto imported = core::import_build_profiles_v3(profile_directory_);
+    state.profile_errors = std::move(imported.errors);
+    const auto* profile = imported.catalog.find(*fingerprint);
+    if (!profile) {
+        set_profile_health(
+            state,
+            AnchorHealthState::missing,
+            "no exact build profile matches host image fingerprint " + fingerprint->hex());
+        return state;
+    }
+
+    state.build.id = profile->id;
+    auto resolver = imported.catalog.resolver_for(*fingerprint);
+    auto topology = ProfileRuntimeTopology::from_profile(*profile);
+    if (!resolver || !topology) {
+        set_profile_health(
+            state,
+            AnchorHealthState::missing,
+            "matched build profile has invalid runtime topology");
+        return state;
+    }
+
+    if (!topology->evaluate(*resolver, *image)) {
+        set_profile_health(
+            state,
+            AnchorHealthState::missing,
+            "matched build profile could not evaluate all anchor bindings");
+        return state;
+    }
+
+    state.topology = std::move(*topology);
+    state.health = state.topology->health_snapshot();
+    state.health.anchors.push_back({
+        "profile",
+        AnchorHealthState::resolved,
+        "exact fingerprint matched build profile " + state.build.id,
+    });
+    state.matched = true;
+    return state;
+}
+
+void ProfileAdapter::apply_support(SupportState state) {
+    build_ = std::move(state.build);
+    fingerprint_ = std::move(state.fingerprint);
+    topology_ = std::move(state.topology);
+    health_ = std::move(state.health);
+    profile_errors_ = std::move(state.profile_errors);
+    matched_ = state.matched;
+    probed_ = true;
+}
+
+bool ProfileAdapter::probe() {
+    build_ = {"unknown", std::nullopt};
     fingerprint_.reset();
     topology_.reset();
     health_ = {};
@@ -62,66 +107,10 @@ void ProfileAdapter::reset_probe_state() {
     probed_ = false;
     matched_ = false;
     initialized_ = false;
-}
 
-void ProfileAdapter::set_profile_health(AnchorHealthState state, std::string reason) {
-    health_.anchors.clear();
-    health_.capabilities.clear();
-    health_.anchors.push_back({"profile", state, std::move(reason)});
-}
-
-bool ProfileAdapter::probe() {
-    reset_probe_state();
-
-    const auto fingerprint = platform::fingerprint_file(image_);
-    const auto bytes = read_bytes(image_);
-    if (!fingerprint || !bytes) {
-        set_profile_health(AnchorHealthState::missing, "host image is unreadable");
-        return false;
-    }
-
-    fingerprint_ = *fingerprint;
-    build_.fingerprint = fingerprint_summary(*fingerprint);
-
-    const auto image = platform::ScanImage::from_file(*bytes);
-    if (!image) {
-        set_profile_health(AnchorHealthState::missing, "host image is not a supported PE image");
-        return false;
-    }
-
-    auto imported = core::import_build_profiles_v3(profile_directory_);
-    profile_errors_ = std::move(imported.errors);
-    const auto* profile = imported.catalog.find(*fingerprint);
-    probed_ = true;
-
-    if (!profile) {
-        set_profile_health(
-            AnchorHealthState::missing,
-            "no exact build profile matches host image fingerprint " + fingerprint->hex());
-        return true;
-    }
-
-    build_.id = profile->id;
-    auto resolver = imported.catalog.resolver_for(*fingerprint);
-    auto topology = ProfileRuntimeTopology::from_profile(*profile);
-    if (!resolver || !topology) {
-        set_profile_health(AnchorHealthState::missing, "matched build profile has invalid runtime topology");
-        return true;
-    }
-
-    if (!topology->evaluate(*resolver, *image)) {
-        set_profile_health(AnchorHealthState::missing, "matched build profile could not evaluate all anchor bindings");
-        return true;
-    }
-
-    topology_ = std::move(*topology);
-    health_ = topology_->health_snapshot();
-    health_.anchors.push_back({
-        "profile",
-        AnchorHealthState::resolved,
-        "exact fingerprint matched build profile " + build_.id,
-    });
-    matched_ = true;
+    auto state = evaluate_support();
+    if (!state) return false;
+    apply_support(std::move(*state));
     return true;
 }
 
@@ -151,6 +140,25 @@ void ProfileAdapter::shutdown() noexcept {
     initialized_ = false;
 }
 
+bool ProfileAdapter::reload_support() {
+    if (!probed_) return false;
+
+    auto candidate = evaluate_support();
+    if (!candidate) return false;
+
+    const bool same_identity = build_.fingerprint == candidate->build.fingerprint;
+    if (matched_ && same_identity && !candidate->matched) {
+        // The live topology was already verified against this exact image. A
+        // malformed, incomplete, or removed replacement profile must not tear
+        // down that known-good in-memory state mid-session.
+        profile_errors_ = std::move(candidate->profile_errors);
+        return false;
+    }
+
+    apply_support(std::move(*candidate));
+    return true;
+}
+
 bool ProfileAdapter::profile_matched() const noexcept {
     return matched_;
 }
@@ -161,6 +169,10 @@ const std::optional<platform::FileFingerprint>& ProfileAdapter::fingerprint() co
 
 const std::vector<core::BuildProfileError>& ProfileAdapter::profile_errors() const noexcept {
     return profile_errors_;
+}
+
+const ImageProvider& ProfileAdapter::image_provider() const noexcept {
+    return *image_provider_;
 }
 
 } // namespace enrage::adapters
