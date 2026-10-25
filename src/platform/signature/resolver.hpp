@@ -34,6 +34,7 @@ struct SymbolResolution {
     ResolutionState state{ResolutionState::unknown_symbol};
     std::optional<std::size_t> offset;
     std::size_t match_count{};
+    std::optional<std::size_t> candidate_index;
 };
 
 class Resolver {
