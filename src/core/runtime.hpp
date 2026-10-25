@@ -19,6 +19,23 @@
 
 namespace enrage::core {
 
+struct RuntimeSnapshot {
+    bool running{};
+    bool extensions_active{};
+    bool safe_mode{};
+    std::string adapter_name;
+    adapters::EnvironmentState environment{adapters::EnvironmentState::unknown};
+    adapters::BuildIdentity build;
+    std::uint64_t capabilities{};
+    adapters::AdapterHealthSnapshot health;
+    std::vector<ModCandidate> mod_candidates;
+    std::vector<LoadedMod> loaded_mods;
+    std::vector<PluginSnapshot> plugins;
+    std::vector<std::string> quarantined_mods;
+    std::vector<Diagnostic> diagnostics;
+    std::optional<RecoveryBreadcrumb> suspected_execution;
+};
+
 class Runtime {
 public:
     Runtime(std::unique_ptr<adapters::Adapter> adapter, std::filesystem::path mod_root);
@@ -41,8 +58,9 @@ public:
             return false;
         }
 
-        const auto found = std::ranges::find(plugins_.plugins(), plugin_id, &LoadedPlugin::id);
-        if (found == plugins_.plugins().end()) return false;
+        const auto live_plugins = plugins_.snapshot();
+        const auto found = std::ranges::find(live_plugins, plugin_id, &PluginSnapshot::id);
+        if (found == live_plugins.end()) return false;
 
         const auto source = replacement_path ? *replacement_path : found->path;
         const auto owner_mod_id = found->owner_mod_id;
@@ -56,6 +74,28 @@ public:
             "failed to hot reload native plugin: " + std::string{plugin_id},
         });
         return false;
+    }
+
+    [[nodiscard]] RuntimeSnapshot snapshot() const {
+        std::scoped_lock lock(runtime_mutex_);
+        RuntimeSnapshot result;
+        result.running = running_;
+        result.extensions_active = extensions_active_;
+        result.safe_mode = recovery_.safe_mode();
+        result.capabilities = capabilities_;
+        result.health = health_;
+        result.mod_candidates = mods_.candidates();
+        result.loaded_mods = loaded_mods_;
+        result.plugins = plugins_.snapshot();
+        result.quarantined_mods = recovery_.quarantined_mods();
+        result.diagnostics = diagnostics_;
+        result.suspected_execution = recovery_.suspected_execution();
+        if (adapter_) {
+            result.adapter_name = std::string{adapter_->name()};
+            result.environment = adapter_->environment_state();
+            result.build = adapter_->build();
+        }
+        return result;
     }
 
     [[nodiscard]] bool running() const noexcept;
