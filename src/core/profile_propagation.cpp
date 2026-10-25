@@ -5,7 +5,9 @@
 #include "platform/scan_image.hpp"
 #include "platform/signature/resolver.hpp"
 
+#include <cstdint>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -19,7 +21,12 @@ std::optional<std::vector<std::byte>> read_bytes(const std::filesystem::path& pa
     if (!input) return std::nullopt;
     const auto end = input.tellg();
     if (end < 0) return std::nullopt;
-    const auto size = static_cast<std::size_t>(end);
+    const auto raw_size = static_cast<std::uint64_t>(end);
+    if (raw_size > std::numeric_limits<std::size_t>::max() ||
+        raw_size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
+        return std::nullopt;
+    }
+    const auto size = static_cast<std::size_t>(raw_size);
     std::vector<std::byte> bytes(size);
     input.seekg(0, std::ios::beg);
     if (size != 0) input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size));
@@ -79,26 +86,17 @@ AuthoringResult propagate_profile(
     if (!result.errors.empty()) return result;
 
     const auto scan_image = platform::ScanImage::from_file(*reference_bytes);
+    if (!scan_image) {
+        result.errors.push_back({{}, "reference image is not a supported PE image"});
+        return result;
+    }
+
     std::vector<SymbolSeed> seeds;
     seeds.reserve(profile.symbols.size());
     for (const auto& symbol : profile.symbols) {
-        if (symbol.region.empty()) {
-            const auto resolution = resolver.resolve(symbol.name, *reference_bytes);
-            if (resolution.state != platform::signature::ResolutionState::unique || !resolution.offset) {
-                result.errors.push_back({symbol.name, "reference symbol is not uniquely resolvable"});
-                continue;
-            }
-            seeds.push_back({symbol.name, *resolution.offset});
-            continue;
-        }
-
-        if (!scan_image) {
-            result.errors.push_back({symbol.name, "section-scoped symbol requires a valid PE image"});
-            continue;
-        }
         const auto resolution = platform::resolve_in_image(resolver, symbol.name, *scan_image);
         if (resolution.state != platform::signature::ResolutionState::unique || !resolution.storage_offset) {
-            result.errors.push_back({symbol.name, "reference symbol is not uniquely resolvable in its region"});
+            result.errors.push_back({symbol.name, "reference symbol is not uniquely resolvable"});
             continue;
         }
         seeds.push_back({symbol.name, *resolution.storage_offset});
