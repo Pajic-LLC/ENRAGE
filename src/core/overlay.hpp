@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -63,7 +64,7 @@ public:
     [[nodiscard]] std::vector<OverlayEntry> list(
         const std::filesystem::path& logical_directory = {}) const;
     [[nodiscard]] std::vector<OverlayConflict> conflicts() const;
-    [[nodiscard]] const std::vector<OverlayMount>& mounts() const noexcept;
+    [[nodiscard]] std::vector<OverlayMount> mounts() const;
 
 private:
     static std::optional<std::filesystem::path> normalize(
@@ -80,6 +81,7 @@ private:
         const std::filesystem::path& normalized) const;
     void sort_mounts();
 
+    mutable std::shared_mutex mutex_;
     std::vector<OverlayMount> mounts_;
     std::map<std::string, Archive, std::less<>> archives_;
 };
