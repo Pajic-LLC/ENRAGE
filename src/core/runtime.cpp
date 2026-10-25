@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -124,6 +125,12 @@ std::string capability_message(const adapters::CapabilityHealth& capability) {
     return message;
 }
 
+bool contains_error(const std::vector<Diagnostic>& diagnostics) {
+    return std::ranges::any_of(diagnostics, [](const Diagnostic& diagnostic) {
+        return diagnostic.severity == DiagnosticSeverity::error;
+    });
+}
+
 } // namespace
 
 Runtime::Runtime(std::unique_ptr<adapters::Adapter> adapter, std::filesystem::path mod_root)
@@ -159,6 +166,11 @@ bool Runtime::start(bool force_safe_mode) {
         recovery_.end_session();
         return false;
     }
+
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(state_root_ / "reload", cleanup_error);
+    active_reload_state_.clear();
+    reload_generation_ = 0;
 
     loaded_mods_.clear();
     diagnostics_.clear();
@@ -255,6 +267,12 @@ void Runtime::stop() noexcept {
     adapter_->shutdown();
     recovery_.end_session();
     running_ = false;
+
+    if (!active_reload_state_.empty()) {
+        std::error_code error;
+        std::filesystem::remove_all(active_reload_state_, error);
+        active_reload_state_.clear();
+    }
 }
 
 void Runtime::tick(double delta_seconds) {
@@ -291,6 +309,109 @@ bool Runtime::reload_support() {
     sync_health();
 
     if (adapter_->environment_state() == adapters::EnvironmentState::local) activate_extensions();
+    return true;
+}
+
+bool Runtime::reload_mods() {
+    if (!running_ || recovery_.safe_mode()) return false;
+
+    ModRegistry candidate_registry{mods_.root()};
+    candidate_registry.discover();
+
+    const auto staging = state_root_ / "reload" / std::to_string(++reload_generation_);
+    std::error_code error;
+    std::filesystem::remove_all(staging, error);
+    error.clear();
+
+    auto candidate_packages = PackageLoader::load(candidate_registry, staging);
+    bool rejected = contains_error(candidate_packages.diagnostics);
+
+    std::vector<ModSpec> specs;
+    specs.reserve(candidate_packages.mods.size());
+    for (const auto& mod : candidate_packages.mods) {
+        if (!recovery_.quarantined(mod.manifest.id)) specs.push_back(mod.manifest.to_spec());
+    }
+
+    auto resolution = ModGraph::resolve(specs);
+    if (!resolution.ok()) rejected = true;
+
+    if (rejected) {
+        diagnostics_.insert(
+            diagnostics_.end(),
+            candidate_packages.diagnostics.begin(),
+            candidate_packages.diagnostics.end());
+        for (const auto& issue : resolution.issues) {
+            diagnostics_.push_back({
+                DiagnosticSeverity::error,
+                DiagnosticCode::dependency_error,
+                {},
+                issue.source,
+                issue_message(issue),
+            });
+        }
+        diagnostics_.push_back({
+            DiagnosticSeverity::warning,
+            DiagnosticCode::reload_rejected,
+            mods_.root(),
+            {},
+            "mod reload rejected; live package set was left unchanged",
+        });
+        std::filesystem::remove_all(staging, error);
+        return false;
+    }
+
+    const auto old_registry = mods_;
+    const auto old_loaded_mods = loaded_mods_;
+    const auto old_load_order = load_order_;
+    const auto old_reload_state = active_reload_state_;
+    const bool old_package_set_valid = package_set_valid_;
+    const bool old_conflicts_reported = conflicts_reported_;
+    const bool was_active = extensions_active_;
+
+    if (was_active) deactivate_extensions();
+
+    mods_ = std::move(candidate_registry);
+    loaded_mods_ = std::move(candidate_packages.mods);
+    load_order_ = std::move(resolution.order);
+    package_set_valid_ = true;
+    conflicts_reported_ = false;
+
+    const auto diagnostic_start = diagnostics_.size();
+    diagnostics_.insert(
+        diagnostics_.end(),
+        candidate_packages.diagnostics.begin(),
+        candidate_packages.diagnostics.end());
+
+    if (adapter_->environment_state() == adapters::EnvironmentState::local) activate_extensions();
+
+    if (activation_failed_since(diagnostic_start)) {
+        deactivate_extensions();
+        mods_ = old_registry;
+        loaded_mods_ = old_loaded_mods;
+        load_order_ = old_load_order;
+        package_set_valid_ = old_package_set_valid;
+        conflicts_reported_ = old_conflicts_reported;
+        active_reload_state_ = old_reload_state;
+
+        diagnostics_.push_back({
+            DiagnosticSeverity::warning,
+            DiagnosticCode::reload_rejected,
+            mods_.root(),
+            {},
+            "mod reload activation failed; previous package set was restored",
+        });
+
+        if (was_active && adapter_->environment_state() == adapters::EnvironmentState::local) {
+            activate_extensions();
+        }
+        std::filesystem::remove_all(staging, error);
+        return false;
+    }
+
+    active_reload_state_ = staging;
+    if (!old_reload_state.empty() && old_reload_state != active_reload_state_) {
+        std::filesystem::remove_all(old_reload_state, error);
+    }
     return true;
 }
 
@@ -355,7 +476,7 @@ void Runtime::mount_content() {
         if (found == loaded_mods_.end() || found->content_root.empty()) continue;
 
         const bool mounted = found->kind == PackageKind::archive
-            ? overlay_.mount_archive(id, found->source, found->content_root, static_cast<int>(index))
+            ? overlay_.mount_archive(id, found->archive_path, found->content_root, static_cast<int>(index))
             : overlay_.mount({id, found->content_root, static_cast<int>(index)});
         if (!mounted) {
             diagnostics_.push_back({
@@ -452,6 +573,18 @@ void Runtime::report_recovery_state_error(std::string message) {
         {},
         std::move(message),
     });
+}
+
+bool Runtime::activation_failed_since(std::size_t diagnostic_index) const noexcept {
+    if (diagnostic_index >= diagnostics_.size()) return false;
+    return std::ranges::any_of(
+        diagnostics_.begin() + static_cast<std::ptrdiff_t>(diagnostic_index),
+        diagnostics_.end(),
+        [](const Diagnostic& diagnostic) {
+            return diagnostic.severity == DiagnosticSeverity::error &&
+                   (diagnostic.code == DiagnosticCode::mount_failed ||
+                    diagnostic.code == DiagnosticCode::plugin_load_failed);
+        });
 }
 
 } // namespace enrage::core
