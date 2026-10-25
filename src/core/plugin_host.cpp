@@ -35,7 +35,7 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     const auto* descriptor = entry();
     if (!descriptor ||
         descriptor->abi_version != ENRAGE_ABI_VERSION ||
-        descriptor->struct_size < sizeof(enrage_plugin_descriptor) ||
+        descriptor->struct_size < ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE ||
         !descriptor->id || !descriptor->name || !descriptor->version ||
         !descriptor->load) {
         return false;
