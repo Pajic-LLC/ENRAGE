@@ -67,21 +67,10 @@ std::optional<ScanImage> ScanImage::from_loaded_snapshot(
     return image;
 }
 
-ImageLayout ScanImage::layout() const noexcept {
-    return layout_;
-}
-
-std::uint64_t ScanImage::base_address() const noexcept {
-    return base_address_;
-}
-
-const std::vector<ScanRegion>& ScanImage::regions() const noexcept {
-    return regions_;
-}
-
-std::span<const std::byte> ScanImage::bytes() const noexcept {
-    return bytes_;
-}
+ImageLayout ScanImage::layout() const noexcept { return layout_; }
+std::uint64_t ScanImage::base_address() const noexcept { return base_address_; }
+const std::vector<ScanRegion>& ScanImage::regions() const noexcept { return regions_; }
+std::span<const std::byte> ScanImage::bytes() const noexcept { return bytes_; }
 
 std::optional<std::span<const std::byte>> ScanImage::region_bytes(std::string_view name) const noexcept {
     const auto* found = region(name);
@@ -109,11 +98,14 @@ ImageResolution resolve_in_image(
     std::string_view symbol,
     const ScanImage& image,
     std::optional<std::string_view> requested_region) {
-    const auto make_unique = [&](const ScanRegion& region, std::size_t local_offset) {
+    const auto make_unique = [&](
+        const ScanRegion& region,
+        std::size_t local_offset,
+        std::optional<std::size_t> candidate_index) {
         const auto storage_offset = region.storage_offset + local_offset;
         const auto rva64 = static_cast<std::uint64_t>(region.rva) + local_offset;
         if (rva64 > std::numeric_limits<std::uint32_t>::max()) {
-            return ImageResolution{signature::ResolutionState::not_found, 0, std::nullopt, std::nullopt, std::nullopt, std::nullopt};
+            return ImageResolution{.state = signature::ResolutionState::not_found};
         }
         const auto rva = static_cast<std::uint32_t>(rva64);
         return ImageResolution{
@@ -123,15 +115,14 @@ ImageResolution resolve_in_image(
             .rva = rva,
             .virtual_address = image.base_address() + rva,
             .region = region.name,
+            .candidate_index = candidate_index,
         };
     };
 
     auto effective_region = requested_region;
     if (!effective_region) {
         const auto* symbol_spec = resolver.spec(symbol);
-        if (symbol_spec && !symbol_spec->region.empty()) {
-            effective_region = symbol_spec->region;
-        }
+        if (symbol_spec && !symbol_spec->region.empty()) effective_region = symbol_spec->region;
     }
 
     if (effective_region) {
@@ -141,29 +132,25 @@ ImageResolution resolve_in_image(
                 .state = resolver.spec(symbol)
                     ? signature::ResolutionState::not_found
                     : signature::ResolutionState::unknown_symbol,
-                .match_count = 0,
             };
         }
         const auto bytes = image.region_bytes(*effective_region);
-        if (!bytes) {
-            return {
-                .state = signature::ResolutionState::not_found,
-                .match_count = 0,
-            };
-        }
+        if (!bytes) return {.state = signature::ResolutionState::not_found};
         const auto resolution = resolver.resolve(symbol, *bytes);
         if (resolution.state != signature::ResolutionState::unique || !resolution.offset) {
             return {
                 .state = resolution.state,
                 .match_count = resolution.match_count,
+                .candidate_index = resolution.candidate_index,
             };
         }
-        return make_unique(*region, *resolution.offset);
+        return make_unique(*region, *resolution.offset, resolution.candidate_index);
     }
 
     std::set<std::size_t> unique_storage_offsets;
     std::size_t ambiguous_matches{};
     bool known_symbol{};
+    std::optional<std::size_t> unique_candidate_index;
 
     for (const auto& region : image.regions()) {
         const auto bytes = image.region_bytes(region.name);
@@ -172,6 +159,9 @@ ImageResolution resolve_in_image(
         if (resolution.state != signature::ResolutionState::unknown_symbol) known_symbol = true;
         if (resolution.state == signature::ResolutionState::unique && resolution.offset) {
             unique_storage_offsets.insert(region.storage_offset + *resolution.offset);
+            if (!unique_candidate_index || (resolution.candidate_index && *resolution.candidate_index < *unique_candidate_index)) {
+                unique_candidate_index = resolution.candidate_index;
+            }
         } else if (resolution.state == signature::ResolutionState::ambiguous) {
             ambiguous_matches += resolution.match_count;
         }
@@ -184,22 +174,12 @@ ImageResolution resolve_in_image(
             .match_count = ambiguous_matches + unique_storage_offsets.size(),
         };
     }
-    if (unique_storage_offsets.empty()) {
-        return {
-            .state = signature::ResolutionState::not_found,
-            .match_count = 0,
-        };
-    }
+    if (unique_storage_offsets.empty()) return {.state = signature::ResolutionState::not_found};
 
     const auto storage_offset = *unique_storage_offsets.begin();
     const auto* region = image.region_for_storage_offset(storage_offset);
-    if (!region) {
-        return {
-            .state = signature::ResolutionState::not_found,
-            .match_count = 0,
-        };
-    }
-    return make_unique(*region, storage_offset - region->storage_offset);
+    if (!region) return {.state = signature::ResolutionState::not_found};
+    return make_unique(*region, storage_offset - region->storage_offset, unique_candidate_index);
 }
 
 } // namespace enrage::platform
