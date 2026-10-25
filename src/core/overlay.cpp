@@ -27,26 +27,30 @@ bool component_equal(
 #endif
 }
 
+std::string logical_key(const std::filesystem::path& path) {
+    auto key = path.generic_string();
+#if defined(_WIN32)
+    std::ranges::transform(key, key.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+#endif
+    return key;
+}
+
 } // namespace
 
 bool Overlay::mount(OverlayMount mount) {
-    if (mount.id.empty() || mount.root.empty()) {
-        return false;
-    }
+    if (mount.id.empty() || mount.root.empty()) return false;
 
     const auto duplicate = std::ranges::find(mounts_, mount.id, &OverlayMount::id);
-    if (duplicate != mounts_.end()) {
-        return false;
-    }
+    if (duplicate != mounts_.end()) return false;
 
     std::error_code error;
     auto canonical_root = std::filesystem::weakly_canonical(mount.root, error);
     if (error) return false;
 
     if (mount.kind == OverlayMountKind::directory) {
-        if (!std::filesystem::is_directory(canonical_root, error) || error) {
-            return false;
-        }
+        if (!std::filesystem::is_directory(canonical_root, error) || error) return false;
         mount.root = std::move(canonical_root);
         mount.prefix.clear();
     } else {
@@ -105,7 +109,6 @@ std::optional<std::filesystem::path> Overlay::resolve(
             const auto archive = archives_.find(mount.id);
             const auto entry = archive_entry_path(mount, *normalized);
             if (archive != archives_.end() && entry && archive->second.contains(*entry)) {
-                // This mount wins, but it intentionally has no physical path.
                 return std::nullopt;
             }
             continue;
@@ -150,6 +153,91 @@ std::optional<std::string> Overlay::read_text(
     return std::string(reinterpret_cast<const char*>(bytes->data()), bytes->size());
 }
 
+std::vector<OverlayEntry> Overlay::list(
+    const std::filesystem::path& logical_directory) const {
+    const auto normalized = normalize_directory(logical_directory);
+    if (!normalized) return {};
+
+    std::map<std::string, OverlayEntry, std::less<>> winners;
+
+    for (const auto& mount : mounts_) {
+        if (mount.kind == OverlayMountKind::archive) {
+            const auto archive = archives_.find(mount.id);
+            if (archive == archives_.end()) continue;
+
+            std::filesystem::path full_prefix = mount.prefix;
+            if (!normalized->empty()) full_prefix /= *normalized;
+            auto prefix = full_prefix.generic_string();
+            if (!prefix.empty() && prefix.back() != '/') prefix.push_back('/');
+
+            for (const auto& entry : archive->second.entries()) {
+                if (!entry.path.starts_with(prefix) || entry.path.size() <= prefix.size()) continue;
+                const auto remainder = entry.path.substr(prefix.size());
+                const auto slash = remainder.find('/');
+                const auto child_text = slash == std::string::npos
+                    ? remainder
+                    : remainder.substr(0, slash);
+                if (child_text.empty()) continue;
+                const std::filesystem::path child{child_text};
+                const auto key = logical_key(child);
+                if (winners.contains(key)) continue;
+                winners.emplace(key, OverlayEntry{
+                    child,
+                    slash == std::string::npos ? OverlayEntryKind::file : OverlayEntryKind::directory,
+                    mount.id,
+                });
+            }
+            continue;
+        }
+
+        std::error_code error;
+        auto physical = mount.root;
+        if (!normalized->empty()) physical /= *normalized;
+        physical = std::filesystem::weakly_canonical(physical, error);
+        if (error || !contained_by(mount.root, physical) ||
+            !std::filesystem::is_directory(physical, error) || error) {
+            continue;
+        }
+
+        for (std::filesystem::directory_iterator it(physical, error), end;
+             !error && it != end;
+             it.increment(error)) {
+            const auto canonical = std::filesystem::weakly_canonical(it->path(), error);
+            if (error || !contained_by(mount.root, canonical)) {
+                error.clear();
+                continue;
+            }
+
+            OverlayEntryKind kind;
+            if (it->is_directory(error) && !error) kind = OverlayEntryKind::directory;
+            else {
+                error.clear();
+                if (!it->is_regular_file(error) || error) {
+                    error.clear();
+                    continue;
+                }
+                kind = OverlayEntryKind::file;
+            }
+
+            const auto child = it->path().filename();
+            const auto key = logical_key(child);
+            if (winners.contains(key)) continue;
+            winners.emplace(key, OverlayEntry{child, kind, mount.id});
+        }
+    }
+
+    std::vector<OverlayEntry> result;
+    result.reserve(winners.size());
+    for (auto& [key, entry] : winners) {
+        static_cast<void>(key);
+        result.push_back(std::move(entry));
+    }
+    std::ranges::sort(result, [](const OverlayEntry& left, const OverlayEntry& right) {
+        return logical_key(left.name) < logical_key(right.name);
+    });
+    return result;
+}
+
 std::vector<OverlayConflict> Overlay::conflicts() const {
     std::map<std::string, std::vector<std::string>> owners;
 
@@ -164,7 +252,7 @@ std::vector<OverlayConflict> Overlay::conflicts() const {
                 if (!entry.path.starts_with(prefix) || entry.path.size() <= prefix.size()) continue;
                 const auto logical = normalize(std::filesystem::path{entry.path.substr(prefix.size())});
                 if (!logical) continue;
-                owners[logical->generic_string()].push_back(mount.id);
+                owners[logical_key(*logical)].push_back(mount.id);
             }
             continue;
         }
@@ -189,9 +277,9 @@ std::vector<OverlayConflict> Overlay::conflicts() const {
                 error.clear();
                 continue;
             }
-            const auto normalized = normalize(logical);
-            if (!normalized) continue;
-            owners[normalized->generic_string()].push_back(mount.id);
+            const auto normalized_path = normalize(logical);
+            if (!normalized_path) continue;
+            owners[logical_key(*normalized_path)].push_back(mount.id);
         }
     }
 
@@ -210,8 +298,14 @@ const std::vector<OverlayMount>& Overlay::mounts() const noexcept {
 
 std::optional<std::filesystem::path> Overlay::normalize(
     const std::filesystem::path& logical_path) {
-    if (logical_path.empty() || logical_path.is_absolute() ||
-        logical_path.has_root_name() || logical_path.has_root_directory()) {
+    const auto normalized = normalize_directory(logical_path);
+    if (!normalized || normalized->empty()) return std::nullopt;
+    return normalized;
+}
+
+std::optional<std::filesystem::path> Overlay::normalize_directory(
+    const std::filesystem::path& logical_path) {
+    if (logical_path.is_absolute() || logical_path.has_root_name() || logical_path.has_root_directory()) {
         return std::nullopt;
     }
 
@@ -221,8 +315,6 @@ std::optional<std::filesystem::path> Overlay::normalize(
         if (component == ".." || component.empty()) return std::nullopt;
         normalized /= component;
     }
-
-    if (normalized.empty()) return std::nullopt;
     return normalized;
 }
 
