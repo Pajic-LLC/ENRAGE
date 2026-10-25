@@ -28,6 +28,7 @@ enum class DiagnosticCode {
     dependency_error,
     mount_failed,
     plugin_load_failed,
+    plugin_reload_failed,
     file_conflict,
     recovery_state_error,
     recovery_safe_mode,
