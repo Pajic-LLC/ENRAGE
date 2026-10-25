@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <fstream>
 #include <limits>
 #include <system_error>
@@ -12,6 +14,7 @@ namespace {
 constexpr std::array<char, 4> magic{'E', 'N', 'R', '1'};
 constexpr std::uint64_t header_size = 20;
 constexpr std::uint64_t index_entry_fixed_size = 20;
+std::atomic_uint64_t temporary_sequence{};
 
 bool safe_logical_path(const std::filesystem::path& path) {
     if (path.empty() || path.is_absolute() || path.has_root_name() || path.has_root_directory()) return false;
@@ -62,6 +65,93 @@ struct SourceEntry {
     std::uint64_t size{};
 };
 
+std::filesystem::path temporary_sibling(
+    const std::filesystem::path& destination,
+    std::string_view role) {
+    const auto seed = static_cast<std::uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto sequence = temporary_sequence.fetch_add(1, std::memory_order_relaxed);
+    return destination.parent_path() /
+           (destination.filename().string() + ".enrage-" + std::string{role} + "-" +
+            std::to_string(seed ^ sequence));
+}
+
+class TemporaryPathGuard {
+public:
+    explicit TemporaryPathGuard(std::filesystem::path path)
+        : path_(std::move(path)) {}
+
+    ~TemporaryPathGuard() {
+        if (!active_) return;
+        std::error_code ignored;
+        std::filesystem::remove(path_, ignored);
+    }
+
+    void release() noexcept { active_ = false; }
+
+private:
+    std::filesystem::path path_;
+    bool active_{true};
+};
+
+bool commit_temporary_file(
+    const std::filesystem::path& temporary,
+    const std::filesystem::path& destination) {
+    std::error_code error;
+    std::filesystem::rename(temporary, destination, error);
+    if (!error) return true;
+
+    // POSIX rename replaces an existing regular file atomically. Windows does
+    // not, so preserve the previous destination through a same-directory
+    // backup while committing the completed temporary file.
+    error.clear();
+    const auto status = std::filesystem::symlink_status(destination, error);
+    if (error || !std::filesystem::is_regular_file(status)) return false;
+
+    auto backup = temporary_sibling(destination, "backup");
+    for (std::size_t attempt = 0; attempt < 16; ++attempt) {
+        error.clear();
+        if (!std::filesystem::exists(backup, error) && !error) break;
+        backup = temporary_sibling(destination, "backup");
+    }
+    error.clear();
+    if (std::filesystem::exists(backup, error) || error) return false;
+
+    std::filesystem::rename(destination, backup, error);
+    if (error) return false;
+
+    error.clear();
+    std::filesystem::rename(temporary, destination, error);
+    if (error) {
+        std::error_code restore_error;
+        std::filesystem::rename(backup, destination, restore_error);
+        return false;
+    }
+
+    std::error_code ignored;
+    std::filesystem::remove(backup, ignored);
+    return true;
+}
+
+bool payloads_do_not_overlap(const std::vector<ArchiveEntry>& entries) {
+    std::vector<const ArchiveEntry*> payloads;
+    payloads.reserve(entries.size());
+    for (const auto& entry : entries) {
+        if (entry.size != 0) payloads.push_back(&entry);
+    }
+
+    std::ranges::sort(payloads, [](const ArchiveEntry* left, const ArchiveEntry* right) {
+        return left->offset < right->offset;
+    });
+
+    for (std::size_t index = 1; index < payloads.size(); ++index) {
+        const auto* previous = payloads[index - 1];
+        const auto* current = payloads[index];
+        if (previous->size > current->offset - previous->offset) return false;
+    }
+    return true;
+}
+
 } // namespace
 
 std::optional<Archive> Archive::open(const std::filesystem::path& path) {
@@ -98,7 +188,8 @@ std::optional<Archive> Archive::open(const std::filesystem::path& path) {
 
         if (consumed > *index_bytes ||
             *index_bytes - consumed < index_entry_fixed_size ||
-            *path_length > *index_bytes - consumed - index_entry_fixed_size) {
+            *path_length > *index_bytes - consumed - index_entry_fixed_size ||
+            *path_length > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
             return std::nullopt;
         }
 
@@ -119,6 +210,7 @@ std::optional<Archive> Archive::open(const std::filesystem::path& path) {
     for (std::size_t i = 1; i < archive.entries_.size(); ++i) {
         if (archive.entries_[i - 1].path == archive.entries_[i].path) return std::nullopt;
     }
+    if (!payloads_do_not_overlap(archive.entries_)) return std::nullopt;
 
     return archive;
 }
@@ -128,8 +220,14 @@ bool Archive::create(const std::filesystem::path& source_directory, const std::f
     if (!std::filesystem::is_directory(source_directory, error) || error) return false;
 
     std::vector<SourceEntry> entries;
-    for (std::filesystem::recursive_directory_iterator it(source_directory, error), end; !error && it != end; it.increment(error)) {
-        if (!it->is_regular_file(error) || error) continue;
+    for (std::filesystem::recursive_directory_iterator it(source_directory, error), end;
+         !error && it != end;
+         it.increment(error)) {
+        const auto status = it->symlink_status(error);
+        if (error) return false;
+        if (std::filesystem::is_symlink(status)) return false;
+        if (!std::filesystem::is_regular_file(status)) continue;
+
         const auto relative = std::filesystem::relative(it->path(), source_directory, error);
         if (error || !safe_logical_path(relative)) return false;
         const auto raw_size = it->file_size(error);
@@ -143,7 +241,11 @@ bool Archive::create(const std::filesystem::path& source_directory, const std::f
 
     std::uint64_t index_bytes{};
     for (const auto& entry : entries) {
-        if (entry.path.empty() || entry.path.size() > std::numeric_limits<std::uint32_t>::max()) return false;
+        if (entry.path.empty() ||
+            entry.path.size() > std::numeric_limits<std::uint32_t>::max() ||
+            entry.path.size() > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max())) {
+            return false;
+        }
         const auto record_size = index_entry_fixed_size + static_cast<std::uint64_t>(entry.path.size());
         if (index_bytes > std::numeric_limits<std::uint64_t>::max() - record_size) return false;
         index_bytes += record_size;
@@ -156,7 +258,9 @@ bool Archive::create(const std::filesystem::path& source_directory, const std::f
         if (error) return false;
     }
 
-    std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
+    const auto temporary = temporary_sibling(output_path, "pack");
+    TemporaryPathGuard temporary_guard{temporary};
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
     if (!output) return false;
 
     output.write(magic.data(), static_cast<std::streamsize>(magic.size()));
@@ -177,17 +281,41 @@ bool Archive::create(const std::filesystem::path& source_directory, const std::f
 
     std::array<char, 64 * 1024> buffer{};
     for (const auto& entry : entries) {
+        error.clear();
+        const auto current_status = std::filesystem::symlink_status(entry.source, error);
+        if (error || !std::filesystem::is_regular_file(current_status) ||
+            std::filesystem::is_symlink(current_status)) {
+            return false;
+        }
+
         std::ifstream input(entry.source, std::ios::binary);
         if (!input) return false;
-        while (input) {
-            input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            const auto count = input.gcount();
-            if (count > 0) output.write(buffer.data(), count);
+
+        std::uint64_t remaining = entry.size;
+        while (remaining != 0) {
+            const auto chunk = static_cast<std::size_t>(std::min<std::uint64_t>(remaining, buffer.size()));
+            input.read(buffer.data(), static_cast<std::streamsize>(chunk));
+            if (input.gcount() != static_cast<std::streamsize>(chunk)) return false;
+            output.write(buffer.data(), static_cast<std::streamsize>(chunk));
+            if (!output) return false;
+            remaining -= chunk;
         }
-        if (!input.eof() || !output) return false;
+
+        // If a source grows after the index was sized, accepting the extra
+        // bytes would shift every following payload away from its recorded
+        // offset. Treat any size change as a failed transaction instead.
+        if (input.get() != std::char_traits<char>::eof()) return false;
+        if (!input.eof()) return false;
     }
 
-    return static_cast<bool>(output);
+    output.flush();
+    if (!output) return false;
+    output.close();
+    if (!output) return false;
+
+    if (!commit_temporary_file(temporary, output_path)) return false;
+    temporary_guard.release();
+    return true;
 }
 
 const std::vector<ArchiveEntry>& Archive::entries() const noexcept {
