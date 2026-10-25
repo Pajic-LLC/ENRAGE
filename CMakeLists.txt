@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 project(ENRAGE VERSION 0.1.0 LANGUAGES C CXX)
 
 option(ENRAGE_BUILD_TESTS "Build ENRAGE regression tests" ON)
+find_package(Threads REQUIRED)
 
 add_library(enrage_sdk INTERFACE)
 target_include_directories(enrage_sdk INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -44,7 +45,7 @@ target_include_directories(enrage_core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-target_link_libraries(enrage_core PUBLIC enrage_sdk ${CMAKE_DL_LIBS})
+target_link_libraries(enrage_core PUBLIC enrage_sdk ${CMAKE_DL_LIBS} Threads::Threads)
 target_compile_features(enrage_core PUBLIC cxx_std_23)
 
 if(MSVC)
@@ -71,7 +72,6 @@ target_link_libraries(enrage_profile PRIVATE enrage_core)
 
 if(ENRAGE_BUILD_TESTS)
     enable_testing()
-    find_package(Threads REQUIRED)
 
     function(enrage_keep_test_assertions target)
         if(MSVC)
@@ -100,6 +100,10 @@ if(ENRAGE_BUILD_TESTS)
     add_library(enrage_vfs_probe_plugin MODULE tests/vfs_probe_plugin.cpp)
     target_link_libraries(enrage_vfs_probe_plugin PRIVATE enrage_sdk)
     set_target_properties(enrage_vfs_probe_plugin PROPERTIES PREFIX "")
+
+    add_library(enrage_worker_plugin MODULE tests/worker_plugin.cpp)
+    target_link_libraries(enrage_worker_plugin PRIVATE enrage_sdk Threads::Threads)
+    set_target_properties(enrage_worker_plugin PROPERTIES PREFIX "")
 
     add_executable(enrage_crash_probe tests/crash_probe.cpp)
     target_include_directories(enrage_crash_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -228,6 +232,11 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_plugin_execution_tests PRIVATE enrage_core Threads::Threads)
     enrage_keep_test_assertions(enrage_plugin_execution_tests)
 
+    add_executable(enrage_worker_lifetime_tests tests/worker_lifetime_tests.cpp)
+    target_include_directories(enrage_worker_lifetime_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_worker_lifetime_tests PRIVATE enrage_core Threads::Threads)
+    enrage_keep_test_assertions(enrage_worker_lifetime_tests)
+
     add_executable(enrage_process_recovery_tests tests/process_recovery_tests.cpp)
     target_include_directories(enrage_process_recovery_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_process_recovery_tests PRIVATE enrage_core)
@@ -265,6 +274,8 @@ if(ENRAGE_BUILD_TESTS)
         COMMAND enrage_plugin_execution_tests
             $<TARGET_FILE:enrage_test_plugin>
             $<TARGET_FILE:enrage_state_reject_plugin>)
+    add_test(NAME enrage_worker_lifetime_tests
+        COMMAND enrage_worker_lifetime_tests $<TARGET_FILE:enrage_worker_plugin>)
     add_test(NAME enrage_process_recovery_tests
         COMMAND enrage_process_recovery_tests
             $<TARGET_FILE:enrage_crash_probe>
@@ -296,6 +307,7 @@ if(ENRAGE_BUILD_TESTS)
         enrage_lab_adapter_tests
         enrage_signature_health_tests
         enrage_plugin_execution_tests
+        enrage_worker_lifetime_tests
         enrage_process_recovery_tests)
     set_tests_properties(${enrage_regression_tests} PROPERTIES TIMEOUT 30)
 endif()
