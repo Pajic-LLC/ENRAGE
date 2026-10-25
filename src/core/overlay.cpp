@@ -110,12 +110,8 @@ std::optional<std::filesystem::path> Overlay::resolve(
             const auto archive = archives_.find(mount.id);
             const auto entry = archive_entry_path(mount, *normalized);
             if (archive == archives_.end() || !entry) continue;
-            if (archive->second.contains(*entry)) {
-                return std::nullopt;
-            }
-            if (archive->second.contains_prefix(*entry)) {
-                return std::nullopt;
-            }
+            if (archive->second.contains(*entry)) return std::nullopt;
+            if (archive->second.contains_prefix(*entry)) return std::nullopt;
             continue;
         }
 
@@ -169,6 +165,7 @@ std::vector<OverlayEntry> Overlay::list(
     if (!normalized) return {};
 
     std::map<std::string, OverlayEntry, std::less<>> winners;
+    bool directory_claimed = normalized->empty();
 
     for (const auto& mount : mounts_) {
         if (mount.kind == OverlayMountKind::archive) {
@@ -178,10 +175,7 @@ std::vector<OverlayEntry> Overlay::list(
             if (!normalized->empty()) {
                 const auto exact = archive_entry_path(mount, *normalized);
                 if (exact && archive->second.contains(*exact)) {
-                    // A file only shadows the requested directory when no
-                    // higher-priority mount has already established that
-                    // logical path as a directory.
-                    if (winners.empty()) return {};
+                    if (!directory_claimed) return {};
                     continue;
                 }
             }
@@ -190,6 +184,7 @@ std::vector<OverlayEntry> Overlay::list(
             if (!normalized->empty()) full_prefix /= *normalized;
             const auto directory_prefix = full_prefix.generic_string();
             if (!archive->second.contains_prefix(directory_prefix)) continue;
+            directory_claimed = true;
 
             auto prefix = directory_prefix;
             if (!prefix.empty() && prefix.back() != '/') prefix.push_back('/');
@@ -220,11 +215,12 @@ std::vector<OverlayEntry> Overlay::list(
         physical = std::filesystem::weakly_canonical(physical, error);
         if (error || !contained_by(mount.root, physical)) continue;
         if (std::filesystem::is_regular_file(physical, error) && !error) {
-            if (winners.empty()) return {};
+            if (!directory_claimed) return {};
             continue;
         }
         error.clear();
         if (!std::filesystem::is_directory(physical, error) || error) continue;
+        directory_claimed = true;
 
         for (std::filesystem::directory_iterator it(physical, error), end;
              !error && it != end;
