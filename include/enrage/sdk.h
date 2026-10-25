@@ -28,7 +28,9 @@ typedef enum enrage_result {
     ENRAGE_INVALID_ARGUMENT = 1,
     ENRAGE_INCOMPATIBLE_ABI = 2,
     ENRAGE_UNSUPPORTED = 3,
-    ENRAGE_INTERNAL_ERROR = 4
+    ENRAGE_INTERNAL_ERROR = 4,
+    ENRAGE_BUFFER_TOO_SMALL = 5,
+    ENRAGE_NOT_FOUND = 6
 } enrage_result;
 
 typedef uint64_t enrage_capability_bits;
@@ -49,6 +51,13 @@ typedef enrage_result (ENRAGE_CALL *enrage_register_tick_callback)(
     enrage_tick_callback callback,
     void* user_data);
 
+typedef enrage_result (ENRAGE_CALL *enrage_vfs_read_callback)(
+    void* context,
+    const char* logical_path,
+    void* buffer,
+    size_t buffer_size,
+    size_t* required_size);
+
 typedef struct enrage_host_api {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -57,10 +66,18 @@ typedef struct enrage_host_api {
     enrage_log_callback log;
     enrage_capabilities_callback capabilities;
     enrage_register_tick_callback register_tick;
+
+    /* Optional ABI-v1 tail. Check struct_size before reading this field. */
+    enrage_vfs_read_callback vfs_read;
 } enrage_host_api;
 
+/* Original ABI-v1 prefix. Older plugins only require fields through register_tick. */
 #define ENRAGE_HOST_API_V1_SIZE \
     (offsetof(enrage_host_api, register_tick) + sizeof(((enrage_host_api*)0)->register_tick))
+
+/* ABI-v1 virtual-file extension. */
+#define ENRAGE_HOST_API_V1_VFS_SIZE \
+    (offsetof(enrage_host_api, vfs_read) + sizeof(((enrage_host_api*)0)->vfs_read))
 
 typedef enrage_result (ENRAGE_CALL *enrage_plugin_load_callback)(const enrage_host_api* host);
 typedef void (ENRAGE_CALL *enrage_plugin_unload_callback)(void);
