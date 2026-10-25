@@ -1,6 +1,9 @@
 #pragma once
 
+#include "platform/fingerprint.hpp"
+
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -9,7 +12,7 @@ namespace enrage::adapters {
 
 struct BuildIdentity {
     std::string id;
-    std::uint64_t fingerprint{};
+    std::optional<platform::FileFingerprint> fingerprint;
 };
 
 enum class EnvironmentState {
@@ -58,6 +61,10 @@ public:
 
     virtual bool initialize() = 0;
     virtual void shutdown() noexcept = 0;
+
+    // Reload external support data transactionally. Adapters that do not support
+    // external support data leave the current state unchanged and return false.
+    virtual bool reload_support() { return false; }
 };
 
 } // namespace enrage::adapters
