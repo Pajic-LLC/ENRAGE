@@ -93,6 +93,37 @@ const ScanRegion* ScanImage::region_for_storage_offset(std::size_t offset) const
     return found == regions_.end() ? nullptr : &*found;
 }
 
+const ScanRegion* ScanImage::region_for_rva(std::uint32_t rva) const noexcept {
+    const auto found = std::ranges::find_if(regions_, [&](const ScanRegion& region) {
+        if (rva < region.rva) return false;
+        return static_cast<std::uint64_t>(rva) - region.rva < region.size;
+    });
+    return found == regions_.end() ? nullptr : &*found;
+}
+
+std::optional<std::size_t> ScanImage::rva_to_storage_offset(std::uint32_t rva) const noexcept {
+    const auto* found = region_for_rva(rva);
+    if (!found) return std::nullopt;
+    const auto delta = static_cast<std::size_t>(rva - found->rva);
+    if (delta > std::numeric_limits<std::size_t>::max() - found->storage_offset) return std::nullopt;
+    return found->storage_offset + delta;
+}
+
+std::optional<std::uint32_t> ScanImage::storage_offset_to_rva(std::size_t offset) const noexcept {
+    const auto* found = region_for_storage_offset(offset);
+    if (!found) return std::nullopt;
+    const auto delta = offset - found->storage_offset;
+    const auto rva = static_cast<std::uint64_t>(found->rva) + delta;
+    if (rva > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
+    return static_cast<std::uint32_t>(rva);
+}
+
+std::optional<std::uint64_t> ScanImage::rva_to_virtual_address(std::uint32_t rva) const noexcept {
+    if (!region_for_rva(rva)) return std::nullopt;
+    if (rva > std::numeric_limits<std::uint64_t>::max() - base_address_) return std::nullopt;
+    return base_address_ + rva;
+}
+
 ImageResolution resolve_in_image(
     const signature::Resolver& resolver,
     std::string_view symbol,
