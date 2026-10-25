@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <filesystem>
 #include <string_view>
 
@@ -16,7 +17,12 @@
 
 namespace {
 
-int run_child(
+struct ChildResult {
+    bool valid{};
+    std::uint32_t exit_code{};
+};
+
+ChildResult run_child(
     const std::filesystem::path& probe,
     const std::filesystem::path& root,
     const std::filesystem::path& plugin) {
@@ -38,7 +44,7 @@ int run_child(
             nullptr,
             &startup,
             &process)) {
-        return -1;
+        return {};
     }
 
     const DWORD wait = WaitForSingleObject(process.hProcess, INFINITE);
@@ -46,11 +52,11 @@ int run_child(
     const BOOL have_code = GetExitCodeProcess(process.hProcess, &exit_code);
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
-    if (wait != WAIT_OBJECT_0 || !have_code) return -1;
-    return static_cast<int>(exit_code);
+    if (wait != WAIT_OBJECT_0 || !have_code) return {};
+    return {.valid = true, .exit_code = static_cast<std::uint32_t>(exit_code)};
 #else
     const pid_t child = fork();
-    if (child < 0) return -1;
+    if (child < 0) return {};
     if (child == 0) {
         execl(
             probe.c_str(),
@@ -62,10 +68,17 @@ int run_child(
     }
 
     int status = 0;
-    if (waitpid(child, &status, 0) != child) return -1;
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
-    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
-    return -1;
+    if (waitpid(child, &status, 0) != child) return {};
+    if (WIFEXITED(status)) {
+        return {.valid = true, .exit_code = static_cast<std::uint32_t>(WEXITSTATUS(status))};
+    }
+    if (WIFSIGNALED(status)) {
+        return {
+            .valid = true,
+            .exit_code = static_cast<std::uint32_t>(128 + WTERMSIG(status)),
+        };
+    }
+    return {};
 #endif
 }
 
@@ -78,9 +91,9 @@ int main(int argc, char** argv) {
     const auto root = std::filesystem::temp_directory_path() / "enrage-worker-process-recovery-test";
     std::filesystem::remove_all(root);
 
-    const int result = run_child(probe, root, plugin);
-    assert(result >= 0);
-    assert(result != 0);
+    const auto result = run_child(probe, root, plugin);
+    assert(result.valid);
+    assert(result.exit_code != 0);
 
     enrage::core::RecoveryManager recovery{root / ".enrage"};
     assert(recovery.begin_session());
