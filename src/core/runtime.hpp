@@ -28,6 +28,7 @@ public:
     bool start(bool force_safe_mode = false);
     void stop() noexcept;
     void tick(double delta_seconds);
+    bool reload_support();
 
     [[nodiscard]] bool running() const noexcept;
     [[nodiscard]] bool extensions_active() const noexcept;
