@@ -71,6 +71,7 @@ target_link_libraries(enrage_profile PRIVATE enrage_core)
 
 if(ENRAGE_BUILD_TESTS)
     enable_testing()
+    find_package(Threads REQUIRED)
 
     function(enrage_keep_test_assertions target)
         if(MSVC)
@@ -219,7 +220,7 @@ if(ENRAGE_BUILD_TESTS)
 
     add_executable(enrage_plugin_execution_tests tests/plugin_execution_tests.cpp)
     target_include_directories(enrage_plugin_execution_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_link_libraries(enrage_plugin_execution_tests PRIVATE enrage_core)
+    target_link_libraries(enrage_plugin_execution_tests PRIVATE enrage_core Threads::Threads)
     enrage_keep_test_assertions(enrage_plugin_execution_tests)
 
     add_executable(enrage_process_recovery_tests tests/process_recovery_tests.cpp)
