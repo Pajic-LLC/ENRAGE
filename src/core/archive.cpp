@@ -83,7 +83,6 @@ std::optional<Archive> Archive::open(const std::filesystem::path& path) {
     const auto file_size = static_cast<std::uint64_t>(raw_file_size);
     if (file_size < header_size || *index_bytes > file_size - header_size) return std::nullopt;
 
-    // Every index record needs at least the fixed fields plus one path byte.
     if (*count != 0 && *count > *index_bytes / (index_entry_fixed_size + 1)) return std::nullopt;
 
     Archive archive;
@@ -150,6 +149,12 @@ bool Archive::create(const std::filesystem::path& source_directory, const std::f
         index_bytes += record_size;
     }
     if (index_bytes > std::numeric_limits<std::uint64_t>::max() - header_size) return false;
+
+    const auto output_parent = output_path.parent_path();
+    if (!output_parent.empty()) {
+        std::filesystem::create_directories(output_parent, error);
+        if (error) return false;
+    }
 
     std::ofstream output(output_path, std::ios::binary | std::ios::trunc);
     if (!output) return false;
