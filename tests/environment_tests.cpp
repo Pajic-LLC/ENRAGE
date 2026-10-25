@@ -14,7 +14,7 @@ class MutableAdapter final : public enrage::adapters::Adapter {
 public:
     std::string_view name() const noexcept override { return "test"; }
     bool probe() override { return true; }
-    enrage::adapters::BuildIdentity build() const override { return {"test", 1}; }
+    enrage::adapters::BuildIdentity build() const override { return {"test", std::nullopt}; }
     std::uint64_t capabilities() const noexcept override { return ENRAGE_CAPABILITY_VIRTUAL_FILES; }
     enrage::adapters::EnvironmentState environment_state() const noexcept override { return state; }
     bool initialize() override { return true; }
