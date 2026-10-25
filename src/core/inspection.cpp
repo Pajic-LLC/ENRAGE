@@ -87,7 +87,6 @@ std::optional<InspectionReport> inspect_executable(
     report.file_size = fingerprint->size;
 
     const auto pe = platform::PeImage::parse(*bytes);
-    const auto scan_image = platform::ScanImage::from_file(*bytes);
     if (pe) {
         report.pe_valid = true;
         report.pe32_plus = pe->pe32_plus();
@@ -137,13 +136,7 @@ std::optional<InspectionReport> inspect_executable(
         InspectionSymbol symbol;
         symbol.name = spec.name;
 
-        if (!scan_image) {
-            symbol.state = platform::signature::ResolutionState::not_found;
-            report.symbols.push_back(std::move(symbol));
-            continue;
-        }
-
-        const auto resolution = platform::resolve_in_image(*resolver, spec.name, *scan_image);
+        const auto resolution = platform::resolve_in_file_bytes(*resolver, spec.name, *bytes);
         symbol.state = resolution.state;
         symbol.match_count = resolution.match_count;
         symbol.file_offset = resolution.storage_offset;
