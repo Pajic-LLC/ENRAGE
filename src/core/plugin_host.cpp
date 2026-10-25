@@ -50,6 +50,25 @@ enrage_plugin_restore_state_callback restore_state_callback(
 
 } // namespace
 
+thread_local const PluginHost* PluginHost::callback_host_ = nullptr;
+thread_local PluginHost* PluginHost::registration_host_ = nullptr;
+thread_local std::string PluginHost::registration_mod_id_;
+thread_local std::string PluginHost::registration_plugin_id_;
+thread_local std::vector<PluginHost::TickRegistration>* PluginHost::registration_target_ = nullptr;
+
+PluginHost::CallbackGuard::CallbackGuard(const PluginHost* host) noexcept
+    : previous_(callback_host_) {
+    callback_host_ = host;
+}
+
+PluginHost::CallbackGuard::~CallbackGuard() {
+    callback_host_ = previous_;
+}
+
+bool PluginHost::callback_active_on_this_thread() const noexcept {
+    return callback_host_ == this;
+}
+
 PluginHost::PluginHost() {
     api_.abi_version = ENRAGE_ABI_VERSION;
     api_.struct_size = static_cast<uint32_t>(sizeof(enrage_host_api));
@@ -139,6 +158,9 @@ std::optional<PluginHost::PreparedPlugin> PluginHost::prepare_plugin(
 }
 
 bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_mod_id) {
+    if (callback_active_on_this_thread()) return false;
+    std::scoped_lock lock(lifecycle_mutex_);
+
     auto prepared = prepare_plugin(path, owner_mod_id);
     if (!prepared) return false;
 
@@ -157,17 +179,27 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     }
 
     const auto tick_count_before_load = tick_callbacks_.size();
-    registering_mod_id_ = std::string{owner_mod_id};
-    registering_plugin_id_ = prepared->id;
+    registration_host_ = this;
+    registration_mod_id_ = std::string{owner_mod_id};
+    registration_plugin_id_ = prepared->id;
     registration_target_ = nullptr;
-    const auto load_result = prepared->descriptor->load(&api_);
-    registering_mod_id_.clear();
-    registering_plugin_id_.clear();
+
+    enrage_result load_result{};
+    {
+        CallbackGuard callback_guard{this};
+        load_result = prepared->descriptor->load(&api_);
+    }
+
+    registration_host_ = nullptr;
+    registration_mod_id_.clear();
+    registration_plugin_id_.clear();
+    registration_target_ = nullptr;
 
     const bool recovery_cleared = !execution_end_ || owner_mod_id.empty() || execution_end_();
     if (load_result != ENRAGE_OK || !recovery_cleared) {
         tick_callbacks_.resize(tick_count_before_load);
         if (load_result == ENRAGE_OK && prepared->descriptor->unload) {
+            CallbackGuard callback_guard{this};
             prepared->descriptor->unload();
         }
         prepared->library.close();
@@ -191,6 +223,9 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
 bool PluginHost::reload(
     std::string_view plugin_id,
     const std::optional<std::filesystem::path>& replacement_path) {
+    if (callback_active_on_this_thread()) return false;
+    std::scoped_lock lock(lifecycle_mutex_);
+
     const auto found = std::ranges::find(plugins_, plugin_id, &LoadedPlugin::id);
     if (found == plugins_.end()) return false;
     const auto index = static_cast<std::size_t>(std::distance(plugins_.begin(), found));
@@ -219,13 +254,20 @@ bool PluginHost::reload(
         }
 
         std::size_t required_size{};
-        auto state_result = save_state(nullptr, 0, &required_size);
+        enrage_result state_result{};
+        {
+            CallbackGuard callback_guard{this};
+            state_result = save_state(nullptr, 0, &required_size);
+        }
         if ((state_result == ENRAGE_OK || state_result == ENRAGE_BUFFER_TOO_SMALL) &&
             required_size <= max_reload_state_bytes) {
             reload_state.resize(required_size);
             if (required_size != 0) {
                 std::size_t written_size = required_size;
-                state_result = save_state(reload_state.data(), reload_state.size(), &written_size);
+                {
+                    CallbackGuard callback_guard{this};
+                    state_result = save_state(reload_state.data(), reload_state.size(), &written_size);
+                }
                 if (state_result == ENRAGE_OK && written_size <= reload_state.size()) {
                     reload_state.resize(written_size);
                 } else {
@@ -255,18 +297,27 @@ bool PluginHost::reload(
         return false;
     }
 
-    registering_mod_id_ = found->owner_mod_id;
-    registering_plugin_id_ = found->id;
+    registration_host_ = this;
+    registration_mod_id_ = found->owner_mod_id;
+    registration_plugin_id_ = found->id;
     registration_target_ = &staged_callbacks;
-    const auto load_result = prepared->descriptor->load(&api_);
+
+    enrage_result load_result{};
+    {
+        CallbackGuard callback_guard{this};
+        load_result = prepared->descriptor->load(&api_);
+    }
+
+    registration_host_ = nullptr;
+    registration_mod_id_.clear();
+    registration_plugin_id_.clear();
     registration_target_ = nullptr;
-    registering_mod_id_.clear();
-    registering_plugin_id_.clear();
 
     const bool load_recovery_cleared =
         !execution_end_ || found->owner_mod_id.empty() || execution_end_();
     if (load_result != ENRAGE_OK || !load_recovery_cleared) {
         if (load_result == ENRAGE_OK && prepared->descriptor->unload) {
+            CallbackGuard callback_guard{this};
             prepared->descriptor->unload();
         }
         prepared->library.close();
@@ -277,19 +328,29 @@ bool PluginHost::reload(
     if (handoff_state) {
         if (execution_begin_ && !found->owner_mod_id.empty() &&
             !execution_begin_(found->owner_mod_id, found->id, "reload-restore-state")) {
-            if (prepared->descriptor->unload) prepared->descriptor->unload();
+            if (prepared->descriptor->unload) {
+                CallbackGuard callback_guard{this};
+                prepared->descriptor->unload();
+            }
             prepared->library.close();
             cleanup_loaded_path(prepared->loaded_path);
             return false;
         }
 
-        const auto restore_result = restore_state(
-            reload_state.empty() ? nullptr : reload_state.data(),
-            reload_state.size());
+        enrage_result restore_result{};
+        {
+            CallbackGuard callback_guard{this};
+            restore_result = restore_state(
+                reload_state.empty() ? nullptr : reload_state.data(),
+                reload_state.size());
+        }
         const bool restore_recovery_cleared =
             !execution_end_ || found->owner_mod_id.empty() || execution_end_();
         if (restore_result != ENRAGE_OK || !restore_recovery_cleared) {
-            if (prepared->descriptor->unload) prepared->descriptor->unload();
+            if (prepared->descriptor->unload) {
+                CallbackGuard callback_guard{this};
+                prepared->descriptor->unload();
+            }
             prepared->library.close();
             cleanup_loaded_path(prepared->loaded_path);
             return false;
@@ -301,13 +362,19 @@ bool PluginHost::reload(
     if (old.descriptor && old.descriptor->unload) {
         if (execution_begin_ && !old.owner_mod_id.empty() &&
             !execution_begin_(old.owner_mod_id, old.id, "reload-unload")) {
-            if (prepared->descriptor->unload) prepared->descriptor->unload();
+            if (prepared->descriptor->unload) {
+                CallbackGuard callback_guard{this};
+                prepared->descriptor->unload();
+            }
             prepared->library.close();
             cleanup_loaded_path(prepared->loaded_path);
             return false;
         }
 
-        old.descriptor->unload();
+        {
+            CallbackGuard callback_guard{this};
+            old.descriptor->unload();
+        }
         old_recovery_cleared =
             !execution_end_ || old.owner_mod_id.empty() || execution_end_();
     }
@@ -339,12 +406,18 @@ bool PluginHost::reload(
 }
 
 bool PluginHost::unload(std::string_view plugin_id) noexcept {
+    if (callback_active_on_this_thread()) return false;
+    std::scoped_lock lock(lifecycle_mutex_);
+
     const auto found = std::ranges::find(plugins_, plugin_id, &LoadedPlugin::id);
     if (found == plugins_.end()) return false;
     return unload_index(static_cast<std::size_t>(std::distance(plugins_.begin(), found)));
 }
 
 std::size_t PluginHost::unload_mod(std::string_view owner_mod_id) noexcept {
+    if (callback_active_on_this_thread()) return 0;
+    std::scoped_lock lock(lifecycle_mutex_);
+
     std::size_t unloaded{};
     for (std::size_t index = plugins_.size(); index > 0; --index) {
         if (plugins_[index - 1].owner_mod_id != owner_mod_id) continue;
@@ -355,6 +428,9 @@ std::size_t PluginHost::unload_mod(std::string_view owner_mod_id) noexcept {
 }
 
 void PluginHost::unload_all() noexcept {
+    if (callback_active_on_this_thread()) return;
+    std::scoped_lock lock(lifecycle_mutex_);
+
     while (!plugins_.empty()) {
         (void)unload_index(plugins_.size() - 1);
     }
@@ -374,7 +450,10 @@ bool PluginHost::unload_index(std::size_t index) noexcept {
         }
 
         if (execute) {
-            plugin.descriptor->unload();
+            {
+                CallbackGuard callback_guard{this};
+                plugin.descriptor->unload();
+            }
             if (execution_end_ && !plugin.owner_mod_id.empty()) callback_ok = execution_end_();
         } else {
             callback_ok = false;
@@ -397,7 +476,10 @@ void PluginHost::remove_callbacks(std::string_view owner_mod_id, std::string_vie
 }
 
 bool PluginHost::tick(double delta_seconds) {
-    if ((capabilities_ & ENRAGE_CAPABILITY_TICK) == 0) return true;
+    if (callback_active_on_this_thread()) return false;
+    std::scoped_lock lock(lifecycle_mutex_);
+
+    if ((capabilities_.load(std::memory_order_acquire) & ENRAGE_CAPABILITY_TICK) == 0) return true;
 
     const auto callbacks = tick_callbacks_;
     for (const auto& registration : callbacks) {
@@ -408,7 +490,10 @@ bool PluginHost::tick(double delta_seconds) {
             return false;
         }
 
-        registration.callback(delta_seconds, registration.user_data);
+        {
+            CallbackGuard callback_guard{this};
+            registration.callback(delta_seconds, registration.user_data);
+        }
 
         if (execution_end_ && !registration.owner_mod_id.empty() && !execution_end_()) return false;
     }
@@ -416,15 +501,18 @@ bool PluginHost::tick(double delta_seconds) {
 }
 
 void PluginHost::set_capabilities(enrage_capability_bits capabilities) noexcept {
-    capabilities_ = capabilities;
+    capabilities_.store(capabilities, std::memory_order_release);
 }
 
 void PluginHost::set_execution_observer(ExecutionBegin begin, ExecutionEnd end) {
+    if (callback_active_on_this_thread()) return;
+    std::scoped_lock lock(lifecycle_mutex_);
     execution_begin_ = std::move(begin);
     execution_end_ = std::move(end);
 }
 
 void PluginHost::set_virtual_file_reader(VirtualFileReader reader) {
+    std::scoped_lock lock(api_mutex_);
     virtual_file_reader_ = std::move(reader);
 }
 
@@ -433,6 +521,7 @@ const std::vector<LoadedPlugin>& PluginHost::plugins() const noexcept {
 }
 
 std::size_t PluginHost::tick_callback_count() const noexcept {
+    std::scoped_lock lock(lifecycle_mutex_);
     return tick_callbacks_.size();
 }
 
@@ -442,7 +531,7 @@ void ENRAGE_CALL PluginHost::log_thunk(void*, uint32_t level, const char* messag
 
 enrage_capability_bits ENRAGE_CALL PluginHost::capabilities_thunk(void* context) {
     if (!context) return ENRAGE_CAPABILITY_NONE;
-    return static_cast<PluginHost*>(context)->capabilities_;
+    return static_cast<PluginHost*>(context)->capabilities_.load(std::memory_order_acquire);
 }
 
 enrage_result ENRAGE_CALL PluginHost::register_tick_thunk(
@@ -452,19 +541,21 @@ enrage_result ENRAGE_CALL PluginHost::register_tick_thunk(
     if (!context || !callback) return ENRAGE_INVALID_ARGUMENT;
 
     auto* host = static_cast<PluginHost*>(context);
-    if ((host->capabilities_ & ENRAGE_CAPABILITY_TICK) == 0) return ENRAGE_UNSUPPORTED;
-    if (host->registering_plugin_id_.empty()) {
+    if ((host->capabilities_.load(std::memory_order_acquire) & ENRAGE_CAPABILITY_TICK) == 0) {
+        return ENRAGE_UNSUPPORTED;
+    }
+    if (registration_host_ != host || registration_plugin_id_.empty()) {
         return ENRAGE_UNSUPPORTED;
     }
 
     TickRegistration registration{
         callback,
         user_data,
-        host->registering_mod_id_,
-        host->registering_plugin_id_,
+        registration_mod_id_,
+        registration_plugin_id_,
     };
-    if (host->registration_target_) {
-        host->registration_target_->push_back(std::move(registration));
+    if (registration_target_) {
+        registration_target_->push_back(std::move(registration));
     } else {
         host->tick_callbacks_.push_back(std::move(registration));
     }
@@ -480,12 +571,18 @@ enrage_result ENRAGE_CALL PluginHost::vfs_read_thunk(
     if (!context || !logical_path || !required_size) return ENRAGE_INVALID_ARGUMENT;
 
     auto* host = static_cast<PluginHost*>(context);
-    if ((host->capabilities_ & ENRAGE_CAPABILITY_VIRTUAL_FILES) == 0 ||
-        !host->virtual_file_reader_) {
+    if ((host->capabilities_.load(std::memory_order_acquire) & ENRAGE_CAPABILITY_VIRTUAL_FILES) == 0) {
         return ENRAGE_UNSUPPORTED;
     }
 
-    const auto bytes = host->virtual_file_reader_(logical_path);
+    VirtualFileReader reader;
+    {
+        std::scoped_lock lock(host->api_mutex_);
+        reader = host->virtual_file_reader_;
+    }
+    if (!reader) return ENRAGE_UNSUPPORTED;
+
+    const auto bytes = reader(logical_path);
     if (!bytes) {
         *required_size = 0;
         return ENRAGE_NOT_FOUND;
