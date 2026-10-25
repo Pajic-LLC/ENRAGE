@@ -1,35 +1,91 @@
+#include "core/archive.hpp"
 #include "core/overlay.hpp"
 
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 
+namespace {
+
+const enrage::core::OverlayEntry* find_entry(
+    const std::vector<enrage::core::OverlayEntry>& entries,
+    std::string_view name) {
+    for (const auto& entry : entries) {
+        if (entry.name.generic_string() == name) return &entry;
+    }
+    return nullptr;
+}
+
+} // namespace
+
 int main() {
     const auto root = std::filesystem::temp_directory_path() / "enrage-overlay-conflict-test";
     const auto low = root / "low";
-    const auto high = root / "high";
+    const auto high_source = root / "high-source";
+    const auto high_package = root / "high.enr";
     std::filesystem::remove_all(root);
-    std::filesystem::create_directories(low / "data");
-    std::filesystem::create_directories(high / "data");
+
+    std::filesystem::create_directories(low / "data" / "nested");
     std::ofstream{low / "data" / "same.bin"} << "low";
-    std::ofstream{high / "data" / "same.bin"} << "high";
-    std::ofstream{high / "data" / "only-high.bin"} << "high";
+    std::ofstream{low / "data" / "only-low.bin"} << "low";
+    std::ofstream{low / "data" / "nested" / "low.txt"} << "low";
+    std::filesystem::create_directories(low / "data" / "clash");
+    std::ofstream{low / "data" / "clash" / "child.txt"} << "lower-dir";
+
+    std::filesystem::create_directories(high_source / "files" / "data" / "nested");
+    std::ofstream{high_source / "mod.json"} << R"({"id":"example.overlay.high"})";
+    std::ofstream{high_source / "files" / "data" / "same.bin"} << "high";
+    std::ofstream{high_source / "files" / "data" / "only-high.bin"} << "high";
+    std::ofstream{high_source / "files" / "data" / "nested" / "high.txt"} << "high";
+    std::ofstream{high_source / "files" / "data" / "clash"} << "higher-file";
+    assert(enrage::core::Archive::create(high_source, high_package));
 
     enrage::core::Overlay overlay;
     assert(overlay.mount({"low", low, 1}));
-    assert(overlay.mount({"high", high, 2}));
+    assert(overlay.mount_archive("high", high_package, "files", 2));
 
     const auto conflicts = overlay.conflicts();
-    assert(conflicts.size() == 1);
-    assert(conflicts[0].logical_path.generic_string() == "data/same.bin");
-    assert(conflicts[0].mounts.size() == 2);
-    assert(conflicts[0].mounts[0] == "high");
-    assert(conflicts[0].mounts[1] == "low");
+    assert(conflicts.size() == 2);
+    assert(conflicts[0].logical_path.generic_string() == "data/clash" ||
+           conflicts[0].logical_path.generic_string() == "data/same.bin");
 
-    const auto resolved = overlay.resolve("data/same.bin");
-    assert(resolved.has_value());
-    assert(resolved->filename() == "same.bin");
+    assert(overlay.read_text("data/same.bin") == "high");
+    assert(!overlay.resolve("data/same.bin").has_value());
     assert(!overlay.resolve("../../outside.bin").has_value());
+    assert(!overlay.read("../../outside.bin").has_value());
+
+    const auto root_entries = overlay.list();
+    assert(root_entries.size() == 1);
+    assert(root_entries[0].name == "data");
+    assert(root_entries[0].kind == enrage::core::OverlayEntryKind::directory);
+    assert(root_entries[0].mount_id == "high");
+
+    const auto data_entries = overlay.list("data");
+    const auto* same = find_entry(data_entries, "same.bin");
+    const auto* only_high = find_entry(data_entries, "only-high.bin");
+    const auto* only_low = find_entry(data_entries, "only-low.bin");
+    const auto* nested = find_entry(data_entries, "nested");
+    const auto* clash = find_entry(data_entries, "clash");
+    assert(same && same->kind == enrage::core::OverlayEntryKind::file && same->mount_id == "high");
+    assert(only_high && only_high->mount_id == "high");
+    assert(only_low && only_low->mount_id == "low");
+    assert(nested && nested->kind == enrage::core::OverlayEntryKind::directory && nested->mount_id == "high");
+    assert(clash && clash->kind == enrage::core::OverlayEntryKind::file && clash->mount_id == "high");
+
+    const auto nested_entries = overlay.list("data/nested");
+    assert(find_entry(nested_entries, "high.txt"));
+    assert(find_entry(nested_entries, "low.txt"));
+
+    // The high-priority file shadows the lower-priority directory entirely.
+    assert(overlay.list("data/clash").empty());
+    assert(overlay.list("../outside").empty());
+
+    assert(overlay.unmount("high"));
+    assert(overlay.read_text("data/same.bin") == "low");
+    const auto low_clash = overlay.list("data/clash");
+    assert(low_clash.size() == 1);
+    assert(low_clash[0].name == "child.txt");
+    assert(low_clash[0].mount_id == "low");
 
     std::filesystem::remove_all(root);
     return 0;
