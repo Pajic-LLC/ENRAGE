@@ -66,6 +66,8 @@ thread_local std::string PluginHost::registration_plugin_id_;
 thread_local std::uint64_t PluginHost::registration_generation_{};
 thread_local std::vector<PluginHost::TickRegistration>* PluginHost::registration_target_ = nullptr;
 thread_local std::vector<PluginHost::PendingWorker>* PluginHost::registration_worker_target_ = nullptr;
+thread_local bool PluginHost::execution_context_active_{};
+thread_local PluginExecutionContext PluginHost::execution_context_{};
 
 PluginHost::CallbackGuard::CallbackGuard(const PluginHost* host) noexcept
     : previous_(callback_host_) {
@@ -80,10 +82,24 @@ bool PluginHost::callback_active_on_this_thread() const noexcept {
     return callback_host_ == this;
 }
 
+std::optional<PluginExecutionContext> PluginHost::current_execution_context() noexcept {
+    if (!execution_context_active_) return std::nullopt;
+    return execution_context_;
+}
+
 bool PluginHost::begin_execution(const PluginExecutionContext& context) const {
-    if (detailed_execution_begin_) return detailed_execution_begin_(context);
-    if (execution_begin_) return execution_begin_(context.mod_id, context.plugin_id, context.callback);
-    return true;
+    const auto previous_active = execution_context_active_;
+    const auto previous_context = execution_context_;
+    execution_context_ = context;
+    execution_context_active_ = true;
+
+    bool result = true;
+    if (detailed_execution_begin_) result = detailed_execution_begin_(context);
+    else if (execution_begin_) result = execution_begin_(context.mod_id, context.plugin_id, context.callback);
+
+    execution_context_ = previous_context;
+    execution_context_active_ = previous_active;
+    return result;
 }
 
 bool PluginHost::end_execution() const {
