@@ -1,6 +1,6 @@
 #include "core/profile_authoring.hpp"
 
-#include "core/build_profile_io.hpp"
+#include "core/build_profile_v3.hpp"
 #include "platform/fingerprint.hpp"
 #include "platform/scan_image.hpp"
 
@@ -154,7 +154,7 @@ ValidationReport validate_profile_set_strict(
             continue;
         }
 
-        auto parsed = parse_build_profile(*text, profile_file);
+        auto parsed = parse_build_profile_v3(*text, profile_file);
         if (!parsed.ok()) {
             report.errors.push_back({
                 profile_file,
