@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <iostream>
 #include <utility>
 
@@ -14,6 +15,7 @@ PluginHost::PluginHost() {
     api_.log = &PluginHost::log_thunk;
     api_.capabilities = &PluginHost::capabilities_thunk;
     api_.register_tick = &PluginHost::register_tick_thunk;
+    api_.vfs_read = &PluginHost::vfs_read_thunk;
 }
 
 PluginHost::~PluginHost() {
@@ -22,14 +24,10 @@ PluginHost::~PluginHost() {
 
 bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_mod_id) {
     platform::DynamicLibrary library;
-    if (!library.open(path)) {
-        return false;
-    }
+    if (!library.open(path)) return false;
 
     auto* raw_entry = library.symbol(ENRAGE_PLUGIN_ENTRY_NAME);
-    if (!raw_entry) {
-        return false;
-    }
+    if (!raw_entry) return false;
 
     const auto entry = reinterpret_cast<enrage_plugin_entry_fn>(raw_entry);
     const auto* descriptor = entry();
@@ -44,9 +42,7 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     const auto duplicate = std::ranges::find_if(plugins_, [descriptor](const LoadedPlugin& plugin) {
         return plugin.id == descriptor->id;
     });
-    if (duplicate != plugins_.end()) {
-        return false;
-    }
+    if (duplicate != plugins_.end()) return false;
 
     if (execution_begin_ && !owner_mod_id.empty() &&
         !execution_begin_(owner_mod_id, descriptor->id, "load")) {
@@ -63,9 +59,7 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     const bool recovery_cleared = !execution_end_ || owner_mod_id.empty() || execution_end_();
     if (load_result != ENRAGE_OK || !recovery_cleared) {
         tick_callbacks_.resize(tick_count_before_load);
-        if (load_result == ENRAGE_OK && descriptor->unload) {
-            descriptor->unload();
-        }
+        if (load_result == ENRAGE_OK && descriptor->unload) descriptor->unload();
         return false;
     }
 
@@ -118,9 +112,7 @@ bool PluginHost::unload_index(std::size_t index) noexcept {
 
         if (execute) {
             plugin.descriptor->unload();
-            if (execution_end_ && !plugin.owner_mod_id.empty()) {
-                callback_ok = execution_end_();
-            }
+            if (execution_end_ && !plugin.owner_mod_id.empty()) callback_ok = execution_end_();
         } else {
             callback_ok = false;
         }
@@ -140,15 +132,11 @@ void PluginHost::remove_callbacks(std::string_view owner_mod_id, std::string_vie
 }
 
 bool PluginHost::tick(double delta_seconds) {
-    if ((capabilities_ & ENRAGE_CAPABILITY_TICK) == 0) {
-        return true;
-    }
+    if ((capabilities_ & ENRAGE_CAPABILITY_TICK) == 0) return true;
 
     const auto callbacks = tick_callbacks_;
     for (const auto& registration : callbacks) {
-        if (!registration.callback) {
-            continue;
-        }
+        if (!registration.callback) continue;
 
         if (execution_begin_ && !registration.owner_mod_id.empty() &&
             !execution_begin_(registration.owner_mod_id, registration.plugin_id, "tick")) {
@@ -157,9 +145,7 @@ bool PluginHost::tick(double delta_seconds) {
 
         registration.callback(delta_seconds, registration.user_data);
 
-        if (execution_end_ && !registration.owner_mod_id.empty() && !execution_end_()) {
-            return false;
-        }
+        if (execution_end_ && !registration.owner_mod_id.empty() && !execution_end_()) return false;
     }
     return true;
 }
@@ -171,6 +157,10 @@ void PluginHost::set_capabilities(enrage_capability_bits capabilities) noexcept 
 void PluginHost::set_execution_observer(ExecutionBegin begin, ExecutionEnd end) {
     execution_begin_ = std::move(begin);
     execution_end_ = std::move(end);
+}
+
+void PluginHost::set_virtual_file_reader(VirtualFileReader reader) {
+    virtual_file_reader_ = std::move(reader);
 }
 
 const std::vector<LoadedPlugin>& PluginHost::plugins() const noexcept {
@@ -186,9 +176,7 @@ void ENRAGE_CALL PluginHost::log_thunk(void*, uint32_t level, const char* messag
 }
 
 enrage_capability_bits ENRAGE_CALL PluginHost::capabilities_thunk(void* context) {
-    if (!context) {
-        return ENRAGE_CAPABILITY_NONE;
-    }
+    if (!context) return ENRAGE_CAPABILITY_NONE;
     return static_cast<PluginHost*>(context)->capabilities_;
 }
 
@@ -196,14 +184,10 @@ enrage_result ENRAGE_CALL PluginHost::register_tick_thunk(
     void* context,
     enrage_tick_callback callback,
     void* user_data) {
-    if (!context || !callback) {
-        return ENRAGE_INVALID_ARGUMENT;
-    }
+    if (!context || !callback) return ENRAGE_INVALID_ARGUMENT;
 
     auto* host = static_cast<PluginHost*>(context);
-    if ((host->capabilities_ & ENRAGE_CAPABILITY_TICK) == 0) {
-        return ENRAGE_UNSUPPORTED;
-    }
+    if ((host->capabilities_ & ENRAGE_CAPABILITY_TICK) == 0) return ENRAGE_UNSUPPORTED;
     if (host->registering_plugin_id_.empty()) {
         // ABI v1 registrations are owned by the plugin being loaded. Reject
         // late registrations because they cannot be attributed safely.
@@ -216,6 +200,34 @@ enrage_result ENRAGE_CALL PluginHost::register_tick_thunk(
         host->registering_mod_id_,
         host->registering_plugin_id_,
     });
+    return ENRAGE_OK;
+}
+
+enrage_result ENRAGE_CALL PluginHost::vfs_read_thunk(
+    void* context,
+    const char* logical_path,
+    void* buffer,
+    std::size_t buffer_size,
+    std::size_t* required_size) {
+    if (!context || !logical_path || !required_size) return ENRAGE_INVALID_ARGUMENT;
+
+    auto* host = static_cast<PluginHost*>(context);
+    if ((host->capabilities_ & ENRAGE_CAPABILITY_VIRTUAL_FILES) == 0 ||
+        !host->virtual_file_reader_) {
+        return ENRAGE_UNSUPPORTED;
+    }
+
+    const auto bytes = host->virtual_file_reader_(logical_path);
+    if (!bytes) {
+        *required_size = 0;
+        return ENRAGE_NOT_FOUND;
+    }
+
+    *required_size = bytes->size();
+    if (bytes->empty()) return ENRAGE_OK;
+    if (!buffer || buffer_size < bytes->size()) return ENRAGE_BUFFER_TOO_SMALL;
+
+    std::memcpy(buffer, bytes->data(), bytes->size());
     return ENRAGE_OK;
 }
 
