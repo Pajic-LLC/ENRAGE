@@ -174,12 +174,15 @@ void overlay_prefers_highest_priority_and_rejects_traversal() {
     const auto resolved = overlay.resolve("data/value.bin");
     assert(resolved.has_value());
     assert(*resolved == std::filesystem::weakly_canonical(high / "data" / "value.bin"));
+    assert(overlay.read_text("data/value.bin") == "high");
     assert(!overlay.resolve("../outside.bin").has_value());
+    assert(!overlay.read("../outside.bin").has_value());
 
     assert(overlay.unmount("high"));
     const auto fallback = overlay.resolve("data/value.bin");
     assert(fallback.has_value());
     assert(*fallback == std::filesystem::weakly_canonical(low / "data" / "value.bin"));
+    assert(overlay.read_text("data/value.bin") == "low");
 
     std::filesystem::remove_all(root);
 }
@@ -189,6 +192,7 @@ void archive_round_trip() {
     const auto source = root / "source";
     const auto package = root / "example.enr";
     const auto extracted = root / "extracted";
+    const auto selected = root / "selected" / "value.txt";
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(source / "files" / "data");
     std::ofstream{source / "mod.json"} << R"({"id":"example.archive"})";
@@ -198,14 +202,20 @@ void archive_round_trip() {
     const auto archive = enrage::core::Archive::open(package);
     assert(archive.has_value());
     assert(archive->entries().size() == 2);
+    assert(archive->contains("mod.json"));
+    assert(archive->contains("files/data/value.txt"));
+    assert(archive->contains_prefix("files"));
+    assert(!archive->contains_prefix("missing"));
     assert(archive->read_text("files/data/value.txt") == "hello");
+    assert(archive->extract("files/data/value.txt", selected));
+    assert(read_file(selected) == "hello");
     assert(archive->extract_all(extracted));
     assert(read_file(extracted / "files" / "data" / "value.txt") == "hello");
 
     std::filesystem::remove_all(root);
 }
 
-void package_loader_normalizes_loose_and_archive_mods() {
+void package_loader_keeps_archive_content_virtual() {
     const auto root = std::filesystem::temp_directory_path() / "enrage-package-test";
     const auto mods = root / "mods";
     const auto loose = mods / "loose";
@@ -226,7 +236,18 @@ void package_loader_normalizes_loose_and_archive_mods() {
     assert(result.diagnostics.empty());
     assert(result.mods[0].manifest.id == "example.loose");
     assert(result.mods[1].manifest.id == "example.packed");
-    assert(std::filesystem::is_regular_file(result.mods[1].content_root / "packed.txt"));
+    assert(result.mods[1].kind == enrage::core::PackageKind::archive);
+    assert(result.mods[1].content_root == std::filesystem::path{"files"});
+    assert(!std::filesystem::is_regular_file(result.mods[1].root / "files" / "packed.txt"));
+
+    enrage::core::Overlay overlay;
+    assert(overlay.mount_archive(
+        result.mods[1].manifest.id,
+        result.mods[1].source,
+        result.mods[1].content_root,
+        1));
+    assert(overlay.read_text("packed.txt") == "packed");
+    assert(!overlay.resolve("packed.txt").has_value());
 
     std::filesystem::remove_all(root);
 }
@@ -240,7 +261,7 @@ void plugin_host_loads_c_abi_plugin(const std::filesystem::path& plugin_path) {
     assert(host.plugins()[0].id == "dev.enrage.test");
     assert(host.tick_callback_count() == 1);
 
-    host.tick(1.0 / 60.0);
+    assert(host.tick(1.0 / 60.0));
     host.unload_all();
     assert(host.plugins().empty());
     assert(host.tick_callback_count() == 0);
@@ -272,9 +293,33 @@ void runtime_loads_drop_in_mod(const std::filesystem::path& plugin_path) {
     const auto resolved = runtime.overlay().resolve("data/value.txt");
     assert(resolved.has_value());
     assert(read_file(*resolved) == "override");
+    assert(runtime.overlay().read_text("data/value.txt") == "override");
     runtime.tick(1.0 / 60.0);
     runtime.stop();
     assert(!runtime.running());
+
+    std::filesystem::remove_all(root);
+}
+
+void runtime_reads_packaged_content_without_extraction() {
+    const auto root = std::filesystem::temp_directory_path() / "enrage-runtime-archive-test";
+    const auto mods = root / "mods";
+    const auto source = root / "source";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(source / "files" / "data");
+    std::ofstream{source / "mod.json"} << R"({"id":"example.runtime.archive"})";
+    std::ofstream{source / "files" / "data" / "value.txt"} << "virtual";
+    assert(enrage::core::Archive::create(source, mods / "example.enr"));
+
+    enrage::core::Runtime runtime{
+        std::make_unique<enrage::adapters::NullAdapter>(), mods};
+    assert(runtime.start());
+    assert(runtime.loaded_mods().size() == 1);
+    assert(runtime.loaded_mods()[0].kind == enrage::core::PackageKind::archive);
+    assert(runtime.overlay().read_text("data/value.txt") == "virtual");
+    assert(!runtime.overlay().resolve("data/value.txt").has_value());
+    assert(!std::filesystem::exists(runtime.loaded_mods()[0].root / "files" / "data" / "value.txt"));
+    runtime.stop();
 
     std::filesystem::remove_all(root);
 }
@@ -311,9 +356,10 @@ int main(int argc, char** argv) {
     mod_graph_reports_invalid_sets();
     overlay_prefers_highest_priority_and_rejects_traversal();
     archive_round_trip();
-    package_loader_normalizes_loose_and_archive_mods();
+    package_loader_keeps_archive_content_virtual();
     plugin_host_loads_c_abi_plugin(plugin_path);
     runtime_loads_drop_in_mod(plugin_path);
+    runtime_reads_packaged_content_without_extraction();
     runtime_lifecycle_is_idempotent();
     return 0;
 }
