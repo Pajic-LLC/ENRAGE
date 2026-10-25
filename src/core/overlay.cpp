@@ -109,7 +109,14 @@ std::optional<std::filesystem::path> Overlay::resolve(
         if (mount.kind == OverlayMountKind::archive) {
             const auto archive = archives_.find(mount.id);
             const auto entry = archive_entry_path(mount, *normalized);
-            if (archive != archives_.end() && entry && archive->second.contains(*entry)) {
+            if (archive == archives_.end() || !entry) continue;
+            if (archive->second.contains(*entry)) {
+                // This mount wins, but it intentionally has no physical path.
+                return std::nullopt;
+            }
+            if (archive->second.contains_prefix(*entry)) {
+                // A higher-priority directory shadows lower files of the same
+                // logical path.
                 return std::nullopt;
             }
             continue;
@@ -119,6 +126,8 @@ std::optional<std::filesystem::path> Overlay::resolve(
         const auto candidate = std::filesystem::weakly_canonical(mount.root / *normalized, error);
         if (error || !contained_by(mount.root, candidate)) continue;
         if (std::filesystem::is_regular_file(candidate, error) && !error) return candidate;
+        error.clear();
+        if (std::filesystem::is_directory(candidate, error) && !error) return std::nullopt;
     }
 
     return std::nullopt;
@@ -133,15 +142,18 @@ std::optional<std::vector<std::byte>> Overlay::read(
         if (mount.kind == OverlayMountKind::archive) {
             const auto archive = archives_.find(mount.id);
             const auto entry = archive_entry_path(mount, *normalized);
-            if (archive == archives_.end() || !entry || !archive->second.contains(*entry)) continue;
-            return archive->second.read(*entry);
+            if (archive == archives_.end() || !entry) continue;
+            if (archive->second.contains(*entry)) return archive->second.read(*entry);
+            if (archive->second.contains_prefix(*entry)) return std::nullopt;
+            continue;
         }
 
         std::error_code error;
         const auto candidate = std::filesystem::weakly_canonical(mount.root / *normalized, error);
         if (error || !contained_by(mount.root, candidate)) continue;
-        if (!std::filesystem::is_regular_file(candidate, error) || error) continue;
-        return read_file(candidate);
+        if (std::filesystem::is_regular_file(candidate, error) && !error) return read_file(candidate);
+        error.clear();
+        if (std::filesystem::is_directory(candidate, error) && !error) return std::nullopt;
     }
 
     return std::nullopt;
@@ -168,11 +180,7 @@ std::vector<OverlayEntry> Overlay::list(
 
             if (!normalized->empty()) {
                 const auto exact = archive_entry_path(mount, *normalized);
-                if (exact && archive->second.contains(*exact)) {
-                    // A higher-priority file at the requested logical path
-                    // shadows lower-priority directories of the same name.
-                    return {};
-                }
+                if (exact && archive->second.contains(*exact)) return {};
             }
 
             std::filesystem::path full_prefix = mount.prefix;
