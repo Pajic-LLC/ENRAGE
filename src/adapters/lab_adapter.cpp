@@ -31,6 +31,10 @@ EnvironmentState LabAdapter::environment_state() const noexcept {
     return state_->environment;
 }
 
+AdapterHealthSnapshot LabAdapter::health_snapshot() const {
+    return state_->capability_map.snapshot(state_->capability_bits);
+}
+
 bool LabAdapter::initialize() {
     ++state_->initialize_count;
     state_->events.push_back("initialize");
