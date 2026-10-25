@@ -32,6 +32,8 @@ enum class DiagnosticCode {
     recovery_state_error,
     recovery_safe_mode,
     mod_quarantined,
+    anchor_health_changed,
+    capability_health_changed,
 };
 
 struct Diagnostic {
