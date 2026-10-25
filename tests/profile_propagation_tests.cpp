@@ -1,3 +1,5 @@
+#include "core/build_profile_v3.hpp"
+#include "core/profile_authoring.hpp"
 #include "core/profile_propagation.hpp"
 #include "platform/fingerprint.hpp"
 
@@ -68,12 +70,16 @@ int main() {
     const auto fingerprint = enrage::platform::fingerprint_file(reference_path);
     assert(fingerprint.has_value());
     std::ofstream{profile_path}
-        << "{\"version\":1,\"id\":\"fixture.reference\","
+        << "{\"version\":3,\"id\":\"fixture.reference\","
         << "\"fingerprint\":{\"sha256\":\"" << fingerprint->hex()
         << "\",\"size\":" << fingerprint->size << "},"
         << "\"capabilities\":9,\"symbols\":[{\"name\":\"PropagatedSymbol\","
         << "\"candidates\":[{\"pattern\":\"10 21 32 43 54 65 76 87 98 A9 BA CB\","
-        << "\"adjustment\":10}]}]}";
+        << "\"adjustment\":10}]}],"
+        << "\"anchors\":[{\"name\":\"scheduler\",\"symbol\":\"PropagatedSymbol\"}],"
+        << "\"requirements\":["
+        << "{\"capability\":1,\"anchors\":[\"scheduler\"]},"
+        << "{\"capability\":8,\"anchors\":[\"scheduler\"]}]}";
 
     const auto propagated = enrage::core::propagate_profile(
         reference_path,
@@ -86,6 +92,17 @@ int main() {
     assert(propagated.profile->symbols.front().name == "PropagatedSymbol");
     assert(propagated.profile->symbols.front().target_offset == expected_target_symbol);
     assert(propagated.profile->symbols.front().target_match_count == 1);
+    assert(propagated.profile->anchors.size() == 1);
+    assert(propagated.profile->anchors.front().name == "scheduler");
+    assert(propagated.profile->anchors.front().symbol == "PropagatedSymbol");
+    assert(propagated.profile->requirements.size() == 2);
+
+    const auto serialized = enrage::core::serialize_profile_draft(*propagated.profile);
+    assert(serialized.find("\"version\": 3") != std::string::npos);
+    auto reparsed = enrage::core::parse_build_profile_v3(serialized, "propagated.enp");
+    assert(reparsed.ok());
+    assert(reparsed.profile->anchors.size() == 1);
+    assert(reparsed.profile->requirements.size() == 2);
 
     auto modified_reference = reference;
     modified_reference[0] ^= std::byte{0xff};
