@@ -68,12 +68,7 @@ ValidationSymbol resolve_symbol(
     const platform::signature::SymbolSpec& symbol,
     const platform::signature::Resolver& resolver,
     const std::vector<std::byte>& bytes) {
-    const auto image = platform::ScanImage::from_file(bytes);
-    if (!image) {
-        return {symbol.name, platform::signature::ResolutionState::not_found, 0, std::nullopt};
-    }
-
-    const auto resolution = platform::resolve_in_image(resolver, symbol.name, *image);
+    const auto resolution = platform::resolve_in_file_bytes(resolver, symbol.name, bytes);
     return {symbol.name, resolution.state, resolution.match_count, resolution.storage_offset};
 }
 
