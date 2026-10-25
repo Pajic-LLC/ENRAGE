@@ -2,6 +2,7 @@
 #include "adapters/lab_adapter.hpp"
 #include "core/runtime.hpp"
 #include "enrage/sdk.h"
+#include "platform/fingerprint.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -13,6 +14,14 @@
 #include <vector>
 
 namespace {
+
+enrage::platform::FileFingerprint fixture_fingerprint(std::uint8_t marker) {
+    enrage::platform::FileFingerprint fingerprint;
+    fingerprint.sha256[0] = marker;
+    fingerprint.sha256[31] = static_cast<std::uint8_t>(marker ^ 0xffu);
+    fingerprint.size = static_cast<std::uint64_t>(marker) * 1024u;
+    return fingerprint;
+}
 
 const enrage::adapters::AnchorHealth* find_anchor(
     const enrage::adapters::AdapterHealthSnapshot& snapshot,
@@ -115,7 +124,8 @@ void runtime_transitions_are_deterministic() {
 
     auto state = std::make_shared<enrage::adapters::LabState>();
     state->adapter_name = "Fixture Lab";
-    state->build = {"fixture.100", 100};
+    const auto build100 = fixture_fingerprint(100);
+    state->build = {"fixture.100", build100};
     state->capability_bits = ENRAGE_CAPABILITY_VIRTUAL_FILES | ENRAGE_CAPABILITY_TICK;
     state->environment = enrage::adapters::EnvironmentState::unknown;
 
@@ -125,7 +135,7 @@ void runtime_transitions_are_deterministic() {
     assert(runtime.start());
     assert(runtime.adapter().name() == "Fixture Lab");
     assert(runtime.adapter().build().id == "fixture.100");
-    assert(runtime.adapter().build().fingerprint == 100);
+    assert(runtime.adapter().build().fingerprint == build100);
     assert(runtime.capabilities() == state->capability_bits);
     assert(!runtime.extensions_active());
     assert(state->probe_count == 1);
@@ -142,12 +152,13 @@ void runtime_transitions_are_deterministic() {
     assert(!runtime.extensions_active());
     assert(!runtime.overlay().resolve("data/value.txt").has_value());
 
-    state->build = {"fixture.101", 101};
+    const auto build101 = fixture_fingerprint(101);
+    state->build = {"fixture.101", build101};
     state->environment = enrage::adapters::EnvironmentState::local;
     runtime.tick(0.0);
     assert(runtime.extensions_active());
     assert(runtime.adapter().build().id == "fixture.101");
-    assert(runtime.adapter().build().fingerprint == 101);
+    assert(runtime.adapter().build().fingerprint == build101);
 
     runtime.stop();
     assert(!state->initialized);
