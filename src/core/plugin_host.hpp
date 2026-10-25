@@ -3,9 +3,11 @@
 #include "enrage/sdk.h"
 #include "platform/dynamic_library.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -75,6 +77,19 @@ private:
         platform::DynamicLibrary library;
     };
 
+    class CallbackGuard {
+    public:
+        explicit CallbackGuard(const PluginHost* host) noexcept;
+        ~CallbackGuard();
+
+        CallbackGuard(const CallbackGuard&) = delete;
+        CallbackGuard& operator=(const CallbackGuard&) = delete;
+
+    private:
+        const PluginHost* previous_{};
+    };
+
+    [[nodiscard]] bool callback_active_on_this_thread() const noexcept;
     [[nodiscard]] std::optional<std::filesystem::path> create_shadow_copy(
         const std::filesystem::path& source) const;
     [[nodiscard]] std::optional<PreparedPlugin> prepare_plugin(
@@ -97,16 +112,21 @@ private:
         std::size_t buffer_size,
         std::size_t* required_size);
 
+    static thread_local const PluginHost* callback_host_;
+    static thread_local PluginHost* registration_host_;
+    static thread_local std::string registration_mod_id_;
+    static thread_local std::string registration_plugin_id_;
+    static thread_local std::vector<TickRegistration>* registration_target_;
+
     enrage_host_api api_{};
-    enrage_capability_bits capabilities_{};
+    std::atomic<enrage_capability_bits> capabilities_{};
     std::vector<TickRegistration> tick_callbacks_;
     std::vector<LoadedPlugin> plugins_;
     ExecutionBegin execution_begin_;
     ExecutionEnd execution_end_;
     VirtualFileReader virtual_file_reader_;
-    std::string registering_mod_id_;
-    std::string registering_plugin_id_;
-    std::vector<TickRegistration>* registration_target_{};
+    mutable std::mutex lifecycle_mutex_;
+    mutable std::mutex api_mutex_;
 };
 
 } // namespace enrage::core
