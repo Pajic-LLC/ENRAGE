@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <span>
 #include <system_error>
 #include <vector>
 
@@ -28,7 +29,7 @@ namespace enrage::platform {
 namespace {
 
 constexpr std::array<std::byte, 4> journal_magic{
-    std::byte{'E'}, std::byte{'N'}, std::byte{'J'}, std::byte{'1'}};
+    std::byte{0x45}, std::byte{0x4e}, std::byte{0x4a}, std::byte{0x31}};
 constexpr std::uint32_t journal_version = 1;
 constexpr std::uint64_t fnv_offset = 14695981039346656037ull;
 constexpr std::uint64_t fnv_prime = 1099511628211ull;
