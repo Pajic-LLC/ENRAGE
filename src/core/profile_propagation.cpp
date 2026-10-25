@@ -1,6 +1,6 @@
 #include "core/profile_propagation.hpp"
 
-#include "core/build_profile_io.hpp"
+#include "core/build_profile_v3.hpp"
 #include "platform/fingerprint.hpp"
 #include "platform/scan_image.hpp"
 #include "platform/signature/resolver.hpp"
@@ -51,7 +51,7 @@ AuthoringResult propagate_profile(
         result.errors.push_back({{}, "reference profile is unreadable"});
         return result;
     }
-    auto parsed = parse_build_profile(*profile_text, reference_profile);
+    auto parsed = parse_build_profile_v3(*profile_text, reference_profile);
     if (!parsed.ok()) {
         result.errors.push_back({{}, parsed.error ? parsed.error->message : "reference profile is invalid"});
         return result;
