@@ -95,6 +95,9 @@ if(ENRAGE_BUILD_TESTS)
     target_include_directories(enrage_crash_probe PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_crash_probe PRIVATE enrage_core)
 
+    add_executable(enrage_sdk_c_tests tests/sdk_c_tests.c)
+    target_link_libraries(enrage_sdk_c_tests PRIVATE enrage_sdk)
+
     add_executable(enrage_tests tests/runtime_tests.cpp)
     target_include_directories(enrage_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_tests PRIVATE enrage_core)
@@ -205,6 +208,7 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_process_recovery_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_process_recovery_tests)
 
+    add_test(NAME enrage_sdk_c_tests COMMAND enrage_sdk_c_tests)
     add_test(NAME enrage_tests COMMAND enrage_tests $<TARGET_FILE:enrage_test_plugin>)
     add_test(NAME enrage_fingerprint_tests COMMAND enrage_fingerprint_tests)
     add_test(NAME enrage_pe_tests COMMAND enrage_pe_tests)
