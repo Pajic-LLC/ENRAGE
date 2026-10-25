@@ -161,45 +161,46 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    const auto build = runtime.adapter().build();
-    std::cout << "ENRAGE runtime: " << runtime.adapter().name() << '\n';
-    std::cout << "Mode: " << (runtime.safe_mode() ? "safe" : "normal") << '\n';
-    std::cout << "Environment: " << environment_name(runtime.adapter().environment_state()) << '\n';
+    const auto snapshot = runtime.snapshot();
+    const auto& build = snapshot.build;
+    std::cout << "ENRAGE runtime: " << snapshot.adapter_name << '\n';
+    std::cout << "Mode: " << (snapshot.safe_mode ? "safe" : "normal") << '\n';
+    std::cout << "Environment: " << environment_name(snapshot.environment) << '\n';
     std::cout << "Build: " << build.id << '\n';
     std::cout << "Fingerprint: "
               << (build.fingerprint ? build.fingerprint->hex() : std::string{"n/a"}) << '\n';
-    std::cout << "Capabilities: " << runtime.capabilities() << '\n';
+    std::cout << "Capabilities: " << snapshot.capabilities << '\n';
 
-    if (!runtime.health().anchors.empty()) {
+    if (!snapshot.health.anchors.empty()) {
         std::cout << "Anchors:\n";
-        for (const auto& anchor : runtime.health().anchors) {
+        for (const auto& anchor : snapshot.health.anchors) {
             std::cout << "  " << anchor.name << " " << anchor_state_name(anchor.state);
             if (!anchor.reason.empty()) std::cout << " - " << anchor.reason;
             std::cout << '\n';
         }
     }
 
-    if (!runtime.health().capabilities.empty()) {
+    if (!snapshot.health.capabilities.empty()) {
         std::cout << "Capability health:\n";
-        for (const auto& capability : runtime.health().capabilities) {
+        for (const auto& capability : snapshot.health.capabilities) {
             std::cout << "  " << capability_name(capability.capability) << " "
                       << (capability.available ? "available" : "suppressed") << '\n';
         }
     }
 
-    std::cout << "Discovered " << runtime.mods().candidates().size() << " mod candidate(s).\n";
-    for (const auto& mod : runtime.mods().candidates()) {
+    std::cout << "Discovered " << snapshot.mod_candidates.size() << " mod candidate(s).\n";
+    for (const auto& mod : snapshot.mod_candidates) {
         std::cout << "  " << mod.id << (mod.packaged ? " [package]" : " [directory]") << '\n';
     }
 
-    if (!runtime.quarantined_mods().empty()) {
-        std::cout << "Quarantined " << runtime.quarantined_mods().size() << " mod(s):\n";
-        for (const auto& id : runtime.quarantined_mods()) {
+    if (!snapshot.quarantined_mods.empty()) {
+        std::cout << "Quarantined " << snapshot.quarantined_mods.size() << " mod(s):\n";
+        for (const auto& id : snapshot.quarantined_mods) {
             std::cout << "  " << id << '\n';
         }
     }
 
-    for (const auto& diagnostic : runtime.diagnostics()) {
+    for (const auto& diagnostic : snapshot.diagnostics) {
         std::cout << '[' << severity_name(diagnostic.severity) << "] ";
         if (!diagnostic.mod_id.empty()) std::cout << diagnostic.mod_id << ": ";
         std::cout << diagnostic.message << '\n';
