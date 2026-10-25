@@ -1,6 +1,7 @@
 #pragma once
 
 #include "adapters/adapter.hpp"
+#include "adapters/capability_map.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +15,7 @@ struct LabState {
     std::string adapter_name{"ENRAGE Lab"};
     BuildIdentity build{"lab.1", 1};
     std::uint64_t capability_bits{};
+    CapabilityMap capability_map;
     EnvironmentState environment{EnvironmentState::unknown};
     bool probe_result{true};
     bool initialize_result{true};
