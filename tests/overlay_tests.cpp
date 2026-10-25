@@ -1,10 +1,12 @@
 #include "core/archive.hpp"
 #include "core/overlay.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -103,6 +105,53 @@ int main() {
     assert(low_clash[0].name == "child.txt");
     assert(low_clash[0].mount_id == "low");
     assert(overlay.read_text("data/dir-shadow") == "lower-file");
+
+    // Reader threads may observe either mounted generation or the short empty
+    // interval between clear() and remount(), but they must never observe torn
+    // backend state while directory/archive mounts are being replaced.
+    overlay.clear();
+    assert(overlay.mount({"race-low", low, 1}));
+
+    std::atomic_bool stop_readers{false};
+    std::atomic_bool invalid_observation{false};
+    std::vector<std::thread> readers;
+    for (int index = 0; index < 4; ++index) {
+        readers.emplace_back([&] {
+            while (!stop_readers.load(std::memory_order_acquire)) {
+                const auto value = overlay.read_text("data/same.bin");
+                if (value && *value != "low" && *value != "high") {
+                    invalid_observation.store(true, std::memory_order_release);
+                    return;
+                }
+
+                const auto entries = overlay.list("data");
+                for (const auto& entry : entries) {
+                    if (entry.mount_id != "race-low" && entry.mount_id != "race-high") {
+                        invalid_observation.store(true, std::memory_order_release);
+                        return;
+                    }
+                }
+
+                const auto snapshot = overlay.mounts();
+                if (snapshot.size() > 1) {
+                    invalid_observation.store(true, std::memory_order_release);
+                    return;
+                }
+            }
+        });
+    }
+
+    for (int generation = 0; generation < 500; ++generation) {
+        overlay.clear();
+        const bool mounted = (generation % 2) == 0
+            ? overlay.mount({"race-low", low, 1})
+            : overlay.mount_archive("race-high", high_package, "files", 1);
+        assert(mounted);
+    }
+
+    stop_readers.store(true, std::memory_order_release);
+    for (auto& reader : readers) reader.join();
+    assert(!invalid_observation.load(std::memory_order_acquire));
 
     std::filesystem::remove_all(root);
     return 0;
