@@ -31,7 +31,8 @@ static const enrage_plugin_descriptor descriptor = {
     on_unload,
 };
 
-_Static_assert(ENRAGE_HOST_API_V1_SIZE <= sizeof(enrage_host_api), "host ABI prefix must fit");
+_Static_assert(ENRAGE_HOST_API_V1_SIZE <= ENRAGE_HOST_API_V1_VFS_SIZE, "host API tail moved backwards");
+_Static_assert(ENRAGE_HOST_API_V1_VFS_SIZE <= sizeof(enrage_host_api), "VFS host ABI prefix must fit");
 _Static_assert(ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE <= sizeof(enrage_plugin_descriptor), "plugin ABI prefix must fit");
 _Static_assert(ENRAGE_CAPABILITY_TICK == 1ull, "capability bit changed");
 _Static_assert(ENRAGE_CAPABILITY_VIRTUAL_FILES == 2ull, "capability bit changed");
