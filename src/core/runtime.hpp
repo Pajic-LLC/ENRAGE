@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -34,6 +35,7 @@ public:
     bool reload_plugin(
         std::string_view plugin_id,
         const std::optional<std::filesystem::path>& replacement_path = std::nullopt) {
+        std::scoped_lock lock(runtime_mutex_);
         if (!running_ || recovery_.safe_mode() || !extensions_active_ ||
             adapter_->environment_state() != adapters::EnvironmentState::local) {
             return false;
@@ -100,6 +102,7 @@ private:
     bool extensions_active_{};
     bool recovery_state_error_reported_{};
     bool running_{};
+    mutable std::mutex runtime_mutex_;
 };
 
 } // namespace enrage::core
