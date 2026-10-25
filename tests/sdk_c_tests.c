@@ -31,14 +31,17 @@ static const enrage_plugin_descriptor descriptor = {
     "1.0.0",
     on_load,
     on_unload,
+    NULL,
+    NULL,
 };
 
 ENRAGE_C_ASSERT(host_tail_order, ENRAGE_HOST_API_V1_SIZE <= ENRAGE_HOST_API_V1_VFS_SIZE);
 ENRAGE_C_ASSERT(host_vfs_prefix_fits, ENRAGE_HOST_API_V1_VFS_SIZE <= sizeof(enrage_host_api));
-ENRAGE_C_ASSERT(plugin_prefix_fits, ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE <= sizeof(enrage_plugin_descriptor));
+ENRAGE_C_ASSERT(plugin_state_tail_order, ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE <= ENRAGE_PLUGIN_DESCRIPTOR_V1_STATE_SIZE);
+ENRAGE_C_ASSERT(plugin_state_tail_fits, ENRAGE_PLUGIN_DESCRIPTOR_V1_STATE_SIZE <= sizeof(enrage_plugin_descriptor));
 ENRAGE_C_ASSERT(tick_capability_bit, ENRAGE_CAPABILITY_TICK == 1ull);
 ENRAGE_C_ASSERT(vfs_capability_bit, ENRAGE_CAPABILITY_VIRTUAL_FILES == 2ull);
 
 int main(void) {
-    return descriptor.struct_size >= ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE ? 0 : 1;
+    return descriptor.struct_size >= ENRAGE_PLUGIN_DESCRIPTOR_V1_STATE_SIZE ? 0 : 1;
 }
