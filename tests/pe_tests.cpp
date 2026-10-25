@@ -74,6 +74,16 @@ int main() {
     assert(text != nullptr);
     assert(text->virtual_address == 0x1000);
     assert(text->raw_offset == 0x200);
+    assert(text->executable());
+    assert(text->readable());
+    assert(!text->writable());
+
+    assert(image->rva_to_file_offset(0x1000) == 0x200);
+    assert(image->rva_to_file_offset(0x1011) == 0x211);
+    assert(image->file_offset_to_rva(0x200) == 0x1000);
+    assert(image->file_offset_to_rva(0x211) == 0x1011);
+    assert(!image->rva_to_file_offset(0x1200).has_value());
+    assert(!image->file_offset_to_rva(0x100).has_value());
 
     const auto text_bytes = image->section_bytes(bytes, ".text");
     assert(text_bytes.has_value());
