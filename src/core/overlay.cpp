@@ -6,6 +6,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <system_error>
 #include <utility>
 
@@ -43,13 +44,11 @@ std::string logical_key(const std::filesystem::path& path) {
 bool Overlay::mount(OverlayMount mount) {
     if (mount.id.empty() || mount.root.empty()) return false;
 
-    const auto duplicate = std::ranges::find(mounts_, mount.id, &OverlayMount::id);
-    if (duplicate != mounts_.end()) return false;
-
     std::error_code error;
     auto canonical_root = std::filesystem::weakly_canonical(mount.root, error);
     if (error) return false;
 
+    std::optional<Archive> prepared_archive;
     if (mount.kind == OverlayMountKind::directory) {
         if (!std::filesystem::is_directory(canonical_root, error) || error) return false;
         mount.root = std::move(canonical_root);
@@ -58,13 +57,20 @@ bool Overlay::mount(OverlayMount mount) {
         if (!std::filesystem::is_regular_file(canonical_root, error) || error) return false;
         const auto normalized_prefix = normalize(mount.prefix);
         if (!normalized_prefix) return false;
-        auto archive = Archive::open(canonical_root);
-        if (!archive) return false;
-        if (!archive->contains_prefix(normalized_prefix->generic_string())) return false;
+        prepared_archive = Archive::open(canonical_root);
+        if (!prepared_archive) return false;
+        if (!prepared_archive->contains_prefix(normalized_prefix->generic_string())) return false;
 
         mount.root = std::move(canonical_root);
         mount.prefix = *normalized_prefix;
-        if (!archives_.emplace(mount.id, std::move(*archive)).second) return false;
+    }
+
+    std::unique_lock lock(mutex_);
+    const auto duplicate = std::ranges::find(mounts_, mount.id, &OverlayMount::id);
+    if (duplicate != mounts_.end()) return false;
+
+    if (prepared_archive && !archives_.emplace(mount.id, std::move(*prepared_archive)).second) {
+        return false;
     }
 
     mounts_.push_back(std::move(mount));
@@ -87,6 +93,7 @@ bool Overlay::mount_archive(
 }
 
 bool Overlay::unmount(std::string_view id) {
+    std::unique_lock lock(mutex_);
     const auto old_size = mounts_.size();
     std::erase_if(mounts_, [id](const OverlayMount& mount) {
         return mount.id == id;
@@ -96,6 +103,7 @@ bool Overlay::unmount(std::string_view id) {
 }
 
 void Overlay::clear() noexcept {
+    std::unique_lock lock(mutex_);
     mounts_.clear();
     archives_.clear();
 }
@@ -105,6 +113,7 @@ std::optional<std::filesystem::path> Overlay::resolve(
     const auto normalized = normalize(logical_path);
     if (!normalized) return std::nullopt;
 
+    std::shared_lock lock(mutex_);
     for (const auto& mount : mounts_) {
         if (mount.kind == OverlayMountKind::archive) {
             const auto archive = archives_.find(mount.id);
@@ -131,6 +140,7 @@ std::optional<std::vector<std::byte>> Overlay::read(
     const auto normalized = normalize(logical_path);
     if (!normalized) return std::nullopt;
 
+    std::shared_lock lock(mutex_);
     for (const auto& mount : mounts_) {
         if (mount.kind == OverlayMountKind::archive) {
             const auto archive = archives_.find(mount.id);
@@ -164,6 +174,7 @@ std::vector<OverlayEntry> Overlay::list(
     const auto normalized = normalize_directory(logical_directory);
     if (!normalized) return {};
 
+    std::shared_lock lock(mutex_);
     std::map<std::string, OverlayEntry, std::less<>> winners;
     bool directory_claimed = normalized->empty();
 
@@ -262,6 +273,7 @@ std::vector<OverlayEntry> Overlay::list(
 }
 
 std::vector<OverlayConflict> Overlay::conflicts() const {
+    std::shared_lock lock(mutex_);
     std::map<std::string, std::vector<std::string>> owners;
 
     for (const auto& mount : mounts_) {
@@ -315,7 +327,8 @@ std::vector<OverlayConflict> Overlay::conflicts() const {
     return result;
 }
 
-const std::vector<OverlayMount>& Overlay::mounts() const noexcept {
+std::vector<OverlayMount> Overlay::mounts() const {
+    std::shared_lock lock(mutex_);
     return mounts_;
 }
 
