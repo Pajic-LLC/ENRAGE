@@ -42,10 +42,10 @@ void double_buffer_recovers_previous_valid_slot() {
     {
         std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
         assert(file);
-        file.seekp(static_cast<std::streamoff>(enrage::platform::ExecutionJournal::header_size));
+        file.seekg(static_cast<std::streamoff>(enrage::platform::ExecutionJournal::header_size));
         char byte{};
         file.read(&byte, 1);
-        file.clear();
+        assert(file);
         file.seekp(static_cast<std::streamoff>(enrage::platform::ExecutionJournal::header_size));
         byte ^= 0x5a;
         file.write(&byte, 1);
