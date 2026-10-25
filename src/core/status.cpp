@@ -107,16 +107,17 @@ void string_array(std::ostringstream& out, const std::vector<std::string>& value
 } // namespace
 
 std::string runtime_status_json(const Runtime& runtime) {
+    const auto snapshot = runtime.snapshot();
+    const auto& build = snapshot.build;
     std::ostringstream out;
-    const auto build = runtime.adapter().build();
 
     out << '{';
     out << "\"schema\":1";
-    out << ",\"running\":" << (runtime.running() ? "true" : "false");
-    out << ",\"safeMode\":" << (runtime.safe_mode() ? "true" : "false");
-    out << ",\"extensionsActive\":" << (runtime.extensions_active() ? "true" : "false");
-    out << ",\"adapter\":\"" << escape_json(runtime.adapter().name()) << '"';
-    out << ",\"environment\":\"" << environment_name(runtime.adapter().environment_state()) << '"';
+    out << ",\"running\":" << (snapshot.running ? "true" : "false");
+    out << ",\"safeMode\":" << (snapshot.safe_mode ? "true" : "false");
+    out << ",\"extensionsActive\":" << (snapshot.extensions_active ? "true" : "false");
+    out << ",\"adapter\":\"" << escape_json(snapshot.adapter_name) << '"';
+    out << ",\"environment\":\"" << environment_name(snapshot.environment) << '"';
     out << ",\"build\":{";
     out << "\"id\":\"" << escape_json(build.id) << '"';
     if (build.fingerprint) {
@@ -126,12 +127,12 @@ std::string runtime_status_json(const Runtime& runtime) {
         out << ",\"sha256\":null,\"size\":null";
     }
     out << '}';
-    out << ",\"capabilities\":" << runtime.capabilities();
+    out << ",\"capabilities\":" << snapshot.capabilities;
 
     out << ",\"anchors\":[";
-    for (std::size_t index = 0; index < runtime.health().anchors.size(); ++index) {
+    for (std::size_t index = 0; index < snapshot.health.anchors.size(); ++index) {
         if (index != 0) out << ',';
-        const auto& anchor = runtime.health().anchors[index];
+        const auto& anchor = snapshot.health.anchors[index];
         out << "{\"name\":\"" << escape_json(anchor.name)
             << "\",\"state\":\"" << anchor_state_name(anchor.state)
             << "\",\"reason\":\"" << escape_json(anchor.reason) << "\"}";
@@ -139,9 +140,9 @@ std::string runtime_status_json(const Runtime& runtime) {
     out << ']';
 
     out << ",\"capabilityHealth\":[";
-    for (std::size_t index = 0; index < runtime.health().capabilities.size(); ++index) {
+    for (std::size_t index = 0; index < snapshot.health.capabilities.size(); ++index) {
         if (index != 0) out << ',';
-        const auto& capability = runtime.health().capabilities[index];
+        const auto& capability = snapshot.health.capabilities[index];
         out << "{\"capability\":" << capability.capability
             << ",\"advertised\":" << (capability.advertised ? "true" : "false")
             << ",\"available\":" << (capability.available ? "true" : "false")
@@ -156,9 +157,9 @@ std::string runtime_status_json(const Runtime& runtime) {
     out << ']';
 
     out << ",\"mods\":[";
-    for (std::size_t index = 0; index < runtime.loaded_mods().size(); ++index) {
+    for (std::size_t index = 0; index < snapshot.loaded_mods.size(); ++index) {
         if (index != 0) out << ',';
-        const auto& mod = runtime.loaded_mods()[index];
+        const auto& mod = snapshot.loaded_mods[index];
         out << "{\"id\":\"" << escape_json(mod.manifest.id)
             << "\",\"name\":\"" << escape_json(mod.manifest.name)
             << "\",\"version\":\"" << escape_json(mod.manifest.version)
@@ -167,9 +168,9 @@ std::string runtime_status_json(const Runtime& runtime) {
     out << ']';
 
     out << ",\"plugins\":[";
-    for (std::size_t index = 0; index < runtime.plugins().plugins().size(); ++index) {
+    for (std::size_t index = 0; index < snapshot.plugins.size(); ++index) {
         if (index != 0) out << ',';
-        const auto& plugin = runtime.plugins().plugins()[index];
+        const auto& plugin = snapshot.plugins[index];
         out << "{\"id\":\"" << escape_json(plugin.id)
             << "\",\"name\":\"" << escape_json(plugin.name)
             << "\",\"version\":\"" << escape_json(plugin.version)
@@ -178,12 +179,12 @@ std::string runtime_status_json(const Runtime& runtime) {
     out << ']';
 
     out << ",\"quarantinedMods\":";
-    string_array(out, runtime.quarantined_mods());
+    string_array(out, snapshot.quarantined_mods);
 
     out << ",\"diagnostics\":[";
-    for (std::size_t index = 0; index < runtime.diagnostics().size(); ++index) {
+    for (std::size_t index = 0; index < snapshot.diagnostics.size(); ++index) {
         if (index != 0) out << ',';
-        const auto& diagnostic = runtime.diagnostics()[index];
+        const auto& diagnostic = snapshot.diagnostics[index];
         out << "{\"severity\":\"" << severity_name(diagnostic.severity)
             << "\",\"code\":\"" << diagnostic_code_name(diagnostic.code)
             << "\",\"modId\":\"" << escape_json(diagnostic.mod_id)
