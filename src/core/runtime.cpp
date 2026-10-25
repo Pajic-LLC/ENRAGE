@@ -1,6 +1,7 @@
 #include "core/runtime.hpp"
 
 #include "core/mod_graph.hpp"
+#include "enrage/sdk.h"
 
 #include <algorithm>
 #include <string>
@@ -93,7 +94,8 @@ bool Runtime::start(bool force_safe_mode) {
     load_order_.clear();
     overlay_.clear();
     plugins_.unload_all();
-    plugins_.set_capabilities(adapter_->capabilities());
+    capabilities_ = adapter_->capabilities();
+    plugins_.set_capabilities(capabilities_);
     package_set_valid_ = false;
     conflicts_reported_ = false;
     extensions_active_ = false;
@@ -194,6 +196,7 @@ void Runtime::tick(double delta_seconds) {
     }
 
     if (adapter_->environment_state() == adapters::EnvironmentState::local) {
+        sync_capabilities();
         if (!extensions_active_) activate_extensions();
         if (extensions_active_ && !plugins_.tick(delta_seconds)) {
             deactivate_extensions();
@@ -214,6 +217,10 @@ bool Runtime::extensions_active() const noexcept {
 
 bool Runtime::safe_mode() const noexcept {
     return recovery_.safe_mode();
+}
+
+std::uint64_t Runtime::capabilities() const noexcept {
+    return capabilities_;
 }
 
 const ModRegistry& Runtime::mods() const noexcept {
@@ -259,22 +266,15 @@ bool Runtime::clear_all_quarantine() {
 void Runtime::activate_extensions() {
     if (extensions_active_ || !package_set_valid_ || recovery_.safe_mode()) return;
 
-    for (std::size_t index = 0; index < load_order_.size(); ++index) {
-        const auto& id = load_order_[index];
+    if ((capabilities_ & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0) {
+        mount_content();
+    }
+
+    for (const auto& id : load_order_) {
         const auto found = std::ranges::find(loaded_mods_, id, [](const LoadedMod& mod) {
             return mod.manifest.id;
         });
         if (found == loaded_mods_.end()) continue;
-
-        if (!found->content_root.empty() && !overlay_.mount({id, found->content_root, static_cast<int>(index)})) {
-            diagnostics_.push_back({
-                DiagnosticSeverity::error,
-                DiagnosticCode::mount_failed,
-                found->source,
-                id,
-                "failed to mount mod content",
-            });
-        }
 
         for (const auto& plugin : found->native_plugins) {
             const bool loaded = plugins_.load(plugin, id);
@@ -290,6 +290,36 @@ void Runtime::activate_extensions() {
         }
     }
 
+    extensions_active_ = true;
+}
+
+void Runtime::deactivate_extensions() noexcept {
+    plugins_.unload_all();
+    overlay_.clear();
+    extensions_active_ = false;
+}
+
+void Runtime::mount_content() {
+    if ((capabilities_ & ENRAGE_CAPABILITY_VIRTUAL_FILES) == 0) return;
+
+    for (std::size_t index = 0; index < load_order_.size(); ++index) {
+        const auto& id = load_order_[index];
+        const auto found = std::ranges::find(loaded_mods_, id, [](const LoadedMod& mod) {
+            return mod.manifest.id;
+        });
+        if (found == loaded_mods_.end() || found->content_root.empty()) continue;
+
+        if (!overlay_.mount({id, found->content_root, static_cast<int>(index)})) {
+            diagnostics_.push_back({
+                DiagnosticSeverity::error,
+                DiagnosticCode::mount_failed,
+                found->source,
+                id,
+                "failed to mount mod content",
+            });
+        }
+    }
+
     if (!conflicts_reported_) {
         for (const auto& conflict : overlay_.conflicts()) {
             diagnostics_.push_back({
@@ -302,14 +332,25 @@ void Runtime::activate_extensions() {
         }
         conflicts_reported_ = true;
     }
-
-    extensions_active_ = true;
 }
 
-void Runtime::deactivate_extensions() noexcept {
-    plugins_.unload_all();
-    overlay_.clear();
-    extensions_active_ = false;
+void Runtime::sync_capabilities() {
+    const auto next = adapter_->capabilities();
+    if (next == capabilities_) return;
+
+    const auto previous = capabilities_;
+    capabilities_ = next;
+    plugins_.set_capabilities(capabilities_);
+
+    if (!extensions_active_) return;
+
+    const bool had_virtual_files = (previous & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0;
+    const bool has_virtual_files = (capabilities_ & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0;
+    if (had_virtual_files && !has_virtual_files) {
+        overlay_.clear();
+    } else if (!had_virtual_files && has_virtual_files) {
+        mount_content();
+    }
 }
 
 void Runtime::report_recovery_state_error(std::string message) {
