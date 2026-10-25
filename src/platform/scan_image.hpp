@@ -54,6 +54,10 @@ public:
     [[nodiscard]] std::optional<std::span<const std::byte>> region_bytes(std::string_view name) const noexcept;
     [[nodiscard]] const ScanRegion* region(std::string_view name) const noexcept;
     [[nodiscard]] const ScanRegion* region_for_storage_offset(std::size_t offset) const noexcept;
+    [[nodiscard]] const ScanRegion* region_for_rva(std::uint32_t rva) const noexcept;
+    [[nodiscard]] std::optional<std::size_t> rva_to_storage_offset(std::uint32_t rva) const noexcept;
+    [[nodiscard]] std::optional<std::uint32_t> storage_offset_to_rva(std::size_t offset) const noexcept;
+    [[nodiscard]] std::optional<std::uint64_t> rva_to_virtual_address(std::uint32_t rva) const noexcept;
 
 private:
     ImageLayout layout_{ImageLayout::file};
