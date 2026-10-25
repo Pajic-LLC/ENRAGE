@@ -25,6 +25,7 @@ add_library(enrage_core STATIC
     src/core/profile_support.cpp
     src/core/recovery.cpp
     src/core/runtime.cpp
+    src/core/status.cpp
     src/platform/dynamic_library.cpp
     src/platform/fingerprint.cpp
     src/platform/pe_image.cpp
