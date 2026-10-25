@@ -6,8 +6,14 @@
 
 #if defined(_WIN32)
 #define ENRAGE_EXPORT __declspec(dllexport)
+#if defined(_MSC_VER)
+#define ENRAGE_CALL __cdecl
+#else
+#define ENRAGE_CALL __attribute__((cdecl))
+#endif
 #else
 #define ENRAGE_EXPORT __attribute__((visibility("default")))
+#define ENRAGE_CALL
 #endif
 
 #ifdef __cplusplus
@@ -35,10 +41,10 @@ enum {
     ENRAGE_CAPABILITY_ASSETS = 1ull << 3
 };
 
-typedef void (*enrage_tick_callback)(double delta_seconds, void* user_data);
-typedef void (*enrage_log_callback)(void* context, uint32_t level, const char* message);
-typedef enrage_capability_bits (*enrage_capabilities_callback)(void* context);
-typedef enrage_result (*enrage_register_tick_callback)(
+typedef void (ENRAGE_CALL *enrage_tick_callback)(double delta_seconds, void* user_data);
+typedef void (ENRAGE_CALL *enrage_log_callback)(void* context, uint32_t level, const char* message);
+typedef enrage_capability_bits (ENRAGE_CALL *enrage_capabilities_callback)(void* context);
+typedef enrage_result (ENRAGE_CALL *enrage_register_tick_callback)(
     void* context,
     enrage_tick_callback callback,
     void* user_data);
@@ -53,8 +59,11 @@ typedef struct enrage_host_api {
     enrage_register_tick_callback register_tick;
 } enrage_host_api;
 
-typedef enrage_result (*enrage_plugin_load_callback)(const enrage_host_api* host);
-typedef void (*enrage_plugin_unload_callback)(void);
+#define ENRAGE_HOST_API_V1_SIZE \
+    (offsetof(enrage_host_api, register_tick) + sizeof(((enrage_host_api*)0)->register_tick))
+
+typedef enrage_result (ENRAGE_CALL *enrage_plugin_load_callback)(const enrage_host_api* host);
+typedef void (ENRAGE_CALL *enrage_plugin_unload_callback)(void);
 
 typedef struct enrage_plugin_descriptor {
     uint32_t abi_version;
@@ -68,9 +77,12 @@ typedef struct enrage_plugin_descriptor {
     enrage_plugin_unload_callback unload;
 } enrage_plugin_descriptor;
 
-typedef const enrage_plugin_descriptor* (*enrage_plugin_entry_fn)(void);
+#define ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE \
+    (offsetof(enrage_plugin_descriptor, unload) + sizeof(((enrage_plugin_descriptor*)0)->unload))
 
-ENRAGE_EXPORT const enrage_plugin_descriptor* enrage_plugin_entry(void);
+typedef const enrage_plugin_descriptor* (ENRAGE_CALL *enrage_plugin_entry_fn)(void);
+
+ENRAGE_EXPORT const enrage_plugin_descriptor* ENRAGE_CALL enrage_plugin_entry(void);
 
 #ifdef __cplusplus
 }
