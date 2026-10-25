@@ -2,6 +2,7 @@
 
 #include "core/plugin_host.hpp"
 #include "platform/atomic_file.hpp"
+#include "platform/execution_journal.hpp"
 
 #include <algorithm>
 #include <array>
@@ -193,17 +194,9 @@ std::optional<SessionRecord> read_session(const std::filesystem::path& path) {
     return std::nullopt;
 }
 
-std::optional<std::vector<RecoveryBreadcrumb>> read_execution_ledger(
-    const std::filesystem::path& path) {
-    std::error_code exists_error;
-    if (!std::filesystem::exists(path, exists_error)) {
-        if (exists_error) return std::nullopt;
-        return std::vector<RecoveryBreadcrumb>{};
-    }
-
-    std::ifstream input(path, std::ios::binary);
-    if (!input) return std::nullopt;
-
+std::optional<std::vector<RecoveryBreadcrumb>> parse_execution_ledger(
+    std::string_view contents) {
+    std::istringstream input{std::string{contents}};
     bool version_seen = false;
     std::vector<RecoveryBreadcrumb> entries;
     std::string line;
@@ -252,6 +245,31 @@ std::optional<std::vector<RecoveryBreadcrumb>> read_execution_ledger(
     if (!input.good() && !input.eof()) return std::nullopt;
     if (!version_seen) return std::nullopt;
     return entries;
+}
+
+std::optional<std::vector<RecoveryBreadcrumb>> read_execution_ledger(
+    const std::filesystem::path& path) {
+    std::error_code exists_error;
+    if (!std::filesystem::exists(path, exists_error)) {
+        if (exists_error) return std::nullopt;
+        return std::vector<RecoveryBreadcrumb>{};
+    }
+
+    const auto journal = platform::ExecutionJournal::read_latest(path);
+    if (journal.state == platform::ExecutionJournal::ReadState::valid) {
+        if (!journal.snapshot) return std::nullopt;
+        return parse_execution_ledger(journal.snapshot->payload);
+    }
+    if (journal.state == platform::ExecutionJournal::ReadState::corrupt) {
+        return std::nullopt;
+    }
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return std::nullopt;
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    if (!input.good() && !input.eof()) return std::nullopt;
+    return parse_execution_ledger(buffer.str());
 }
 
 std::optional<std::uint64_t> read_crash_execution_id(const std::filesystem::path& path) {
@@ -309,6 +327,7 @@ RecoveryManager::~RecoveryManager() {
     // original recovery contract. Uninstall process-local hooks, but preserve
     // session/ledger/crash files for the next RecoveryManager to inspect.
     if (crash_witness_active_) end_crash_witness();
+    if (execution_journal_) execution_journal_->close(false);
     session_active_ = false;
     clear_current_crash_record();
 }
@@ -328,14 +347,24 @@ bool RecoveryManager::begin_session(bool force_safe_mode) {
     if (error || !load_quarantine()) return false;
     if (!recover_previous_session()) return false;
 
-    std::filesystem::remove(execution_path_, error);
-    error.clear();
     std::filesystem::remove(crash_path_, error);
     error.clear();
 
-    if (!write_session_marker()) return false;
+    execution_journal_ = std::make_unique<platform::ExecutionJournal>();
+    if (!execution_journal_->open_new(execution_path_, "version=1\n")) {
+        execution_journal_.reset();
+        return false;
+    }
+
+    if (!write_session_marker()) {
+        execution_journal_->close(true);
+        execution_journal_.reset();
+        return false;
+    }
     if (!begin_crash_witness()) {
         std::filesystem::remove(session_path_, error);
+        execution_journal_->close(true);
+        execution_journal_.reset();
         return false;
     }
 
@@ -353,10 +382,13 @@ void RecoveryManager::end_session() noexcept {
     }
     clear_current_crash_record();
 
+    if (execution_journal_) {
+        execution_journal_->close(true);
+        execution_journal_.reset();
+    }
+
     std::error_code error;
     std::filesystem::remove(session_path_, error);
-    error.clear();
-    std::filesystem::remove(execution_path_, error);
     error.clear();
     std::filesystem::remove(crash_path_, error);
     session_active_ = false;
@@ -509,12 +541,8 @@ bool RecoveryManager::write_session_marker() const {
     return atomic_write(session_path_, "version=3\n");
 }
 
-bool RecoveryManager::write_execution_ledger_locked() const {
-    if (active_executions_.empty()) {
-        std::error_code error;
-        std::filesystem::remove(execution_path_, error);
-        return !error;
-    }
+bool RecoveryManager::write_execution_ledger_locked() {
+    if (!execution_journal_ || !execution_journal_->is_open()) return false;
 
     std::string contents = "version=1\n";
     for (const auto& entry : active_executions_) {
@@ -534,7 +562,7 @@ bool RecoveryManager::write_execution_ledger_locked() const {
         contents += encode(entry.callback);
         contents.push_back('\n');
     }
-    return atomic_write(execution_path_, contents);
+    return execution_journal_->write(contents);
 }
 
 bool RecoveryManager::recover_previous_session() {
@@ -569,12 +597,19 @@ bool RecoveryManager::recover_previous_session() {
                 active_executions_at_crash_,
                 *crash_execution,
                 &RecoveryBreadcrumb::execution_id);
-            if (found != active_executions_at_crash_.end()) suspected_execution_ = *found;
+            if (found == active_executions_at_crash_.end()) {
+                // A valid witness that is newer than the newest intact journal
+                // slot means the final ledger update was torn. Do not blame an
+                // older execution merely because it survived in the other slot.
+                safe_mode_ = true;
+                return true;
+            }
+            suspected_execution_ = *found;
         }
 
         // Hard exits such as _Exit bypass fatal signal/exception hooks. Preserve
         // the original exact-attribution behavior when only one execution was live.
-        if (!suspected_execution_ && active_executions_at_crash_.size() == 1) {
+        if (!crash_execution && !suspected_execution_ && active_executions_at_crash_.size() == 1) {
             suspected_execution_ = active_executions_at_crash_.front();
         }
 
