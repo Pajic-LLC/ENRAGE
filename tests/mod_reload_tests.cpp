@@ -2,13 +2,16 @@
 #include "core/archive.hpp"
 #include "core/package.hpp"
 #include "core/runtime.hpp"
+#include "core/status.hpp"
 
+#include <atomic>
 #include <cassert>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace {
 
@@ -85,6 +88,23 @@ int main(int argc, char** argv) {
     assert(runtime.plugins().plugins().size() == 1);
     assert(runtime.plugins().tick_callback_count() == 1);
     assert(runtime.overlay().read_text("data/value.txt") == "old");
+
+    std::atomic_bool stop_status{false};
+    std::atomic_bool invalid_status{false};
+    std::thread status_reader([&] {
+        while (!stop_status.load(std::memory_order_acquire)) {
+            const auto status = enrage::core::runtime_status_json(runtime);
+            if (!status.starts_with("{\"schema\":1") ||
+                status.find("\"adapter\":") == std::string::npos ||
+                status.find("\"mods\":[") == std::string::npos ||
+                status.find("\"plugins\":[") == std::string::npos ||
+                status.find("\"diagnostics\":[") == std::string::npos ||
+                status.empty() || status.back() != '}') {
+                invalid_status.store(true, std::memory_order_release);
+                return;
+            }
+        }
+    });
 
     // Plugin-level hot reload is finer-grained than a package-set reload. A
     // corrupt replacement must leave the live shadow generation and VFS state
@@ -174,6 +194,17 @@ int main(int argc, char** argv) {
     assert(runtime.overlay().read_text("data/value.txt") == "new");
     assert(runtime.loaded_mods().at(0).archive_path != original_backing);
     assert(std::filesystem::is_regular_file(runtime.loaded_mods().at(0).archive_path));
+
+    stop_status.store(true, std::memory_order_release);
+    status_reader.join();
+    assert(!invalid_status.load(std::memory_order_acquire));
+
+    const auto final_snapshot = runtime.snapshot();
+    assert(final_snapshot.running);
+    assert(final_snapshot.extensions_active);
+    assert(final_snapshot.loaded_mods.size() == 1);
+    assert(final_snapshot.plugins.size() == 1);
+    assert(final_snapshot.plugins[0].id == "dev.enrage.test");
 
     runtime.stop();
     std::filesystem::remove_all(root);
