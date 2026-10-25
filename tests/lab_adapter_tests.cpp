@@ -1,3 +1,4 @@
+#include "adapters/capability_map.hpp"
 #include "adapters/lab_adapter.hpp"
 #include "core/runtime.hpp"
 #include "enrage/sdk.h"
@@ -6,9 +7,44 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace {
+
+void anchor_requirements_mask_only_affected_capabilities() {
+    enrage::adapters::CapabilityMap map;
+    assert(map.define_anchor("scheduler"));
+    assert(map.define_anchor("virtual-files"));
+    assert(map.define_anchor("native-bridge"));
+    assert(!map.define_anchor("scheduler"));
+
+    assert(map.require(ENRAGE_CAPABILITY_TICK, {"scheduler"}));
+    assert(map.require(ENRAGE_CAPABILITY_VIRTUAL_FILES, {"virtual-files"}));
+    assert(map.require(ENRAGE_CAPABILITY_NATIVE_CALLS, {"native-bridge"}));
+    assert(!map.require(ENRAGE_CAPABILITY_TICK, {"scheduler"}));
+
+    constexpr auto advertised = ENRAGE_CAPABILITY_TICK |
+                                ENRAGE_CAPABILITY_VIRTUAL_FILES |
+                                ENRAGE_CAPABILITY_NATIVE_CALLS |
+                                ENRAGE_CAPABILITY_ASSETS;
+    assert(map.resolve(advertised) == advertised);
+
+    assert(map.set_anchor("scheduler", false));
+    auto available = map.resolve(advertised);
+    assert((available & ENRAGE_CAPABILITY_TICK) == 0);
+    assert((available & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0);
+    assert((available & ENRAGE_CAPABILITY_NATIVE_CALLS) != 0);
+    assert((available & ENRAGE_CAPABILITY_ASSETS) != 0);
+
+    assert(map.set_anchor("virtual-files", false));
+    available = map.resolve(advertised);
+    assert((available & ENRAGE_CAPABILITY_TICK) == 0);
+    assert((available & ENRAGE_CAPABILITY_VIRTUAL_FILES) == 0);
+    assert((available & ENRAGE_CAPABILITY_NATIVE_CALLS) != 0);
+
+    assert(!map.set_anchor("missing", true));
+}
 
 void runtime_transitions_are_deterministic() {
     const auto root = std::filesystem::temp_directory_path() / "enrage-lab-adapter-test";
@@ -32,6 +68,7 @@ void runtime_transitions_are_deterministic() {
     assert(runtime.adapter().name() == "Fixture Lab");
     assert(runtime.adapter().build().id == "fixture.100");
     assert(runtime.adapter().build().fingerprint == 100);
+    assert(runtime.capabilities() == state->capability_bits);
     assert(!runtime.extensions_active());
     assert(state->probe_count == 1);
     assert(state->initialize_count == 1);
@@ -60,6 +97,81 @@ void runtime_transitions_are_deterministic() {
     const std::vector<std::string> expected{"probe", "initialize", "shutdown"};
     assert(state->events == expected);
 
+    std::filesystem::remove_all(root);
+}
+
+void runtime_degrades_capabilities_independently(const std::filesystem::path& plugin_path) {
+    const auto root = std::filesystem::temp_directory_path() / "enrage-lab-capability-degradation-test";
+    const auto mods = root / "mods";
+    const auto mod = mods / "example";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(mod / "files" / "data");
+    std::filesystem::create_directories(mod / "bin");
+
+    const auto plugin_name = plugin_path.filename().string();
+    std::filesystem::copy_file(plugin_path, mod / "bin" / plugin_name);
+    std::ofstream{mod / "files" / "data" / "value.txt"} << "active";
+    std::ofstream manifest{mod / "mod.json"};
+    manifest << "{\"id\":\"example.capabilities\",\"nativePlugins\":[\"bin/"
+             << plugin_name << "\"]}";
+    manifest.close();
+
+    auto state = std::make_shared<enrage::adapters::LabState>();
+    state->capability_bits = ENRAGE_CAPABILITY_TICK |
+                             ENRAGE_CAPABILITY_VIRTUAL_FILES |
+                             ENRAGE_CAPABILITY_NATIVE_CALLS;
+    state->environment = enrage::adapters::EnvironmentState::local;
+    assert(state->capability_map.define_anchor("scheduler"));
+    assert(state->capability_map.define_anchor("virtual-files"));
+    assert(state->capability_map.define_anchor("native-bridge"));
+    assert(state->capability_map.require(ENRAGE_CAPABILITY_TICK, {"scheduler"}));
+    assert(state->capability_map.require(ENRAGE_CAPABILITY_VIRTUAL_FILES, {"virtual-files"}));
+    assert(state->capability_map.require(ENRAGE_CAPABILITY_NATIVE_CALLS, {"native-bridge"}));
+
+    enrage::core::Runtime runtime{
+        std::make_unique<enrage::adapters::LabAdapter>(state), mods};
+    assert(runtime.start());
+    assert(runtime.extensions_active());
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.plugins().tick_callback_count() == 1);
+    assert(runtime.overlay().resolve("data/value.txt").has_value());
+    runtime.tick(1.0 / 60.0);
+
+    assert(state->capability_map.set_anchor("scheduler", false));
+    runtime.tick(1.0 / 60.0);
+    assert((runtime.capabilities() & ENRAGE_CAPABILITY_TICK) == 0);
+    assert((runtime.capabilities() & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0);
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.plugins().tick_callback_count() == 1);
+    assert(runtime.overlay().resolve("data/value.txt").has_value());
+
+    assert(state->capability_map.set_anchor("virtual-files", false));
+    runtime.tick(1.0 / 60.0);
+    assert((runtime.capabilities() & ENRAGE_CAPABILITY_VIRTUAL_FILES) == 0);
+    assert((runtime.capabilities() & ENRAGE_CAPABILITY_NATIVE_CALLS) != 0);
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(!runtime.overlay().resolve("data/value.txt").has_value());
+
+    assert(state->capability_map.set_anchor("virtual-files", true));
+    runtime.tick(1.0 / 60.0);
+    assert((runtime.capabilities() & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0);
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.overlay().resolve("data/value.txt").has_value());
+
+    assert(state->capability_map.set_anchor("scheduler", true));
+    runtime.tick(1.0 / 60.0);
+    assert((runtime.capabilities() & ENRAGE_CAPABILITY_TICK) != 0);
+    assert(runtime.plugins().plugins().size() == 1);
+
+    assert(state->capability_map.set_anchor("native-bridge", false));
+    runtime.tick(1.0 / 60.0);
+    assert((runtime.capabilities() & ENRAGE_CAPABILITY_NATIVE_CALLS) == 0);
+    assert((runtime.capabilities() & ENRAGE_CAPABILITY_TICK) != 0);
+    assert((runtime.capabilities() & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0);
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.overlay().resolve("data/value.txt").has_value());
+
+    runtime.stop();
     std::filesystem::remove_all(root);
 }
 
@@ -96,8 +208,13 @@ void failure_modes_are_controllable() {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::filesystem::path plugin_path = argv[1];
+
+    anchor_requirements_mask_only_affected_capabilities();
     runtime_transitions_are_deterministic();
+    runtime_degrades_capabilities_independently(plugin_path);
     failure_modes_are_controllable();
     return 0;
 }
