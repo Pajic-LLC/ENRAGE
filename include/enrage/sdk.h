@@ -82,6 +82,22 @@ typedef struct enrage_host_api {
 typedef enrage_result (ENRAGE_CALL *enrage_plugin_load_callback)(const enrage_host_api* host);
 typedef void (ENRAGE_CALL *enrage_plugin_unload_callback)(void);
 
+/*
+ * Optional hot-reload state handoff. save_state follows the same two-call
+ * convention as vfs_read: query required_size with a NULL/zero buffer, then
+ * call again with sufficient storage. restore_state receives that opaque byte
+ * sequence after the replacement generation has loaded but before it becomes
+ * live. The payload is private to the plugin and must not contain raw process
+ * pointers or other generation-specific addresses.
+ */
+typedef enrage_result (ENRAGE_CALL *enrage_plugin_save_state_callback)(
+    void* buffer,
+    size_t buffer_size,
+    size_t* required_size);
+typedef enrage_result (ENRAGE_CALL *enrage_plugin_restore_state_callback)(
+    const void* buffer,
+    size_t buffer_size);
+
 typedef struct enrage_plugin_descriptor {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -92,10 +108,19 @@ typedef struct enrage_plugin_descriptor {
 
     enrage_plugin_load_callback load;
     enrage_plugin_unload_callback unload;
+
+    /* Optional ABI-v1 hot-reload state extension. Check struct_size first. */
+    enrage_plugin_save_state_callback save_state;
+    enrage_plugin_restore_state_callback restore_state;
 } enrage_plugin_descriptor;
 
+/* Original ABI-v1 descriptor prefix. */
 #define ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE \
     (offsetof(enrage_plugin_descriptor, unload) + sizeof(((enrage_plugin_descriptor*)0)->unload))
+
+/* ABI-v1 hot-reload state extension. */
+#define ENRAGE_PLUGIN_DESCRIPTOR_V1_STATE_SIZE \
+    (offsetof(enrage_plugin_descriptor, restore_state) + sizeof(((enrage_plugin_descriptor*)0)->restore_state))
 
 typedef const enrage_plugin_descriptor* (ENRAGE_CALL *enrage_plugin_entry_fn)(void);
 
