@@ -262,4 +262,27 @@ ImageResolution resolve_in_image(
     };
 }
 
+ImageResolution resolve_in_file_bytes(
+    const signature::Resolver& resolver,
+    std::string_view symbol,
+    std::span<const std::byte> bytes) {
+    if (const auto image = ScanImage::from_file(bytes)) {
+        return resolve_in_image(resolver, symbol, *image);
+    }
+
+    const auto* spec = resolver.spec(symbol);
+    if (!spec) return {};
+    if (!spec->region.empty()) {
+        return {.state = signature::ResolutionState::not_found};
+    }
+
+    const auto raw = resolver.resolve(symbol, bytes);
+    return {
+        .state = raw.state,
+        .match_count = raw.match_count,
+        .storage_offset = raw.offset,
+        .candidate_index = raw.candidate_index,
+    };
+}
+
 } // namespace enrage::platform
