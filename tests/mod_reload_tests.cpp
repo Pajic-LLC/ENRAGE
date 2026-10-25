@@ -1,0 +1,151 @@
+#include "adapters/null_adapter.hpp"
+#include "core/archive.hpp"
+#include "core/package.hpp"
+#include "core/runtime.hpp"
+
+#include <cassert>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <string>
+#include <string_view>
+
+namespace {
+
+bool has_diagnostic(
+    const enrage::core::Runtime& runtime,
+    enrage::core::DiagnosticCode code) {
+    for (const auto& diagnostic : runtime.diagnostics()) {
+        if (diagnostic.code == code) return true;
+    }
+    return false;
+}
+
+void write_package(
+    const std::filesystem::path& source,
+    const std::filesystem::path& package,
+    const std::filesystem::path& plugin,
+    std::string_view manifest,
+    std::string_view content,
+    bool valid_plugin = true) {
+    std::filesystem::remove_all(source);
+    std::filesystem::create_directories(source / "files" / "data");
+    std::filesystem::create_directories(source / "bin");
+    std::ofstream{source / "mod.json"} << manifest;
+    std::ofstream{source / "files" / "data" / "value.txt"} << content;
+
+    const auto target = source / "bin" / plugin.filename();
+    if (valid_plugin) {
+        std::filesystem::copy_file(plugin, target);
+    } else {
+        std::ofstream{target, std::ios::binary} << "not a dynamic library";
+    }
+
+    assert(enrage::core::Archive::create(source, package));
+}
+
+std::string manifest_for(
+    const std::filesystem::path& plugin,
+    std::string_view extra = {}) {
+    std::string manifest = "{\"id\":\"example.reload\",\"nativePlugins\":[\"bin/";
+    manifest += plugin.filename().generic_string();
+    manifest += "\"]";
+    if (!extra.empty()) {
+        manifest += ",";
+        manifest += extra;
+    }
+    manifest += "}";
+    return manifest;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    assert(argc == 2);
+    const std::filesystem::path plugin_path = argv[1];
+
+    const auto root = std::filesystem::temp_directory_path() / "enrage-mod-reload-test";
+    const auto mods = root / "mods";
+    const auto source = root / "source";
+    const auto package = mods / "reload.enr";
+    std::filesystem::remove_all(root);
+
+    write_package(
+        source,
+        package,
+        plugin_path,
+        manifest_for(plugin_path),
+        "old");
+
+    enrage::core::Runtime runtime{
+        std::make_unique<enrage::adapters::NullAdapter>(),
+        mods};
+    assert(runtime.start());
+    assert(runtime.extensions_active());
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.overlay().read_text("data/value.txt") == "old");
+
+    const auto original_backing = runtime.loaded_mods().at(0).archive_path;
+    assert(std::filesystem::is_regular_file(original_backing));
+    assert(original_backing != package);
+
+    // Replacing the source archive with a malformed manifest must not affect
+    // the already-mounted stable container or running plugin.
+    write_package(
+        source,
+        package,
+        plugin_path,
+        "{not-json",
+        "corrupt");
+    assert(!runtime.reload_mods());
+    assert(runtime.extensions_active());
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.overlay().read_text("data/value.txt") == "old");
+    assert(runtime.loaded_mods().at(0).archive_path == original_backing);
+    assert(has_diagnostic(runtime, enrage::core::DiagnosticCode::reload_rejected));
+
+    // A valid package whose graph no longer resolves is also rejected before
+    // the live extension set is touched.
+    write_package(
+        source,
+        package,
+        plugin_path,
+        manifest_for(plugin_path, "\"dependencies\":[\"missing.mod\"]"),
+        "bad-graph");
+    assert(!runtime.reload_mods());
+    assert(runtime.extensions_active());
+    assert(runtime.overlay().read_text("data/value.txt") == "old");
+
+    // A package may validate structurally but still contain a native module
+    // that the OS refuses to load. Activation failure must roll back too.
+    write_package(
+        source,
+        package,
+        plugin_path,
+        manifest_for(plugin_path),
+        "bad-plugin",
+        false);
+    assert(!runtime.reload_mods());
+    assert(runtime.extensions_active());
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.overlay().read_text("data/value.txt") == "old");
+
+    // Finally swap in a valid package. Its new stable container becomes the
+    // live backing store and the extension is loaded from the new generation.
+    write_package(
+        source,
+        package,
+        plugin_path,
+        manifest_for(plugin_path),
+        "new");
+    assert(runtime.reload_mods());
+    assert(runtime.extensions_active());
+    assert(runtime.plugins().plugins().size() == 1);
+    assert(runtime.overlay().read_text("data/value.txt") == "new");
+    assert(runtime.loaded_mods().at(0).archive_path != original_backing);
+    assert(std::filesystem::is_regular_file(runtime.loaded_mods().at(0).archive_path));
+
+    runtime.stop();
+    std::filesystem::remove_all(root);
+    return 0;
+}
