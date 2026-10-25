@@ -56,4 +56,31 @@ private:
     std::uint64_t loaded_base_{};
 };
 
+// Captures the executable image of the current process. This is intentionally
+// local-only: it never opens or scans a remote process. On unsupported
+// platforms create() returns std::nullopt.
+class CurrentProcessImageProvider final : public ImageProvider {
+public:
+    [[nodiscard]] static std::optional<CurrentProcessImageProvider> create();
+
+    [[nodiscard]] std::string_view name() const noexcept override;
+    [[nodiscard]] std::optional<platform::FileFingerprint> identity() const override;
+    [[nodiscard]] std::optional<platform::ScanImage> scan_image() const override;
+    [[nodiscard]] const std::filesystem::path& executable_path() const noexcept;
+
+private:
+    CurrentProcessImageProvider(
+        std::filesystem::path executable_path,
+        platform::FileFingerprint identity,
+        std::vector<std::byte> loaded_bytes,
+        platform::PeImage metadata,
+        std::uint64_t loaded_base);
+
+    std::filesystem::path executable_path_;
+    platform::FileFingerprint identity_;
+    std::vector<std::byte> loaded_bytes_;
+    platform::PeImage metadata_;
+    std::uint64_t loaded_base_{};
+};
+
 } // namespace enrage::adapters
