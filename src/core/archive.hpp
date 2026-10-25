@@ -27,8 +27,13 @@ public:
         const std::filesystem::path& output_path);
 
     [[nodiscard]] const std::vector<ArchiveEntry>& entries() const noexcept;
+    [[nodiscard]] bool contains(std::string_view logical_path) const noexcept;
+    [[nodiscard]] bool contains_prefix(std::string_view logical_prefix) const noexcept;
     [[nodiscard]] std::optional<std::vector<std::byte>> read(std::string_view logical_path) const;
     [[nodiscard]] std::optional<std::string> read_text(std::string_view logical_path) const;
+    [[nodiscard]] bool extract(
+        std::string_view logical_path,
+        const std::filesystem::path& destination_file) const;
     [[nodiscard]] bool extract_all(const std::filesystem::path& destination) const;
 
 private:
