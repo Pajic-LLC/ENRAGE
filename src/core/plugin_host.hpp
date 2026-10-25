@@ -3,6 +3,7 @@
 #include "enrage/sdk.h"
 #include "platform/dynamic_library.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -37,6 +38,8 @@ public:
     PluginHost& operator=(const PluginHost&) = delete;
 
     bool load(const std::filesystem::path& path, std::string_view owner_mod_id = {});
+    bool unload(std::string_view plugin_id) noexcept;
+    std::size_t unload_mod(std::string_view owner_mod_id) noexcept;
     void unload_all() noexcept;
     [[nodiscard]] bool tick(double delta_seconds);
 
@@ -54,9 +57,12 @@ private:
         std::string plugin_id;
     };
 
-    static void log_thunk(void* context, uint32_t level, const char* message);
-    static enrage_capability_bits capabilities_thunk(void* context);
-    static enrage_result register_tick_thunk(
+    bool unload_index(std::size_t index) noexcept;
+    void remove_callbacks(std::string_view owner_mod_id, std::string_view plugin_id) noexcept;
+
+    static void ENRAGE_CALL log_thunk(void* context, uint32_t level, const char* message);
+    static enrage_capability_bits ENRAGE_CALL capabilities_thunk(void* context);
+    static enrage_result ENRAGE_CALL register_tick_thunk(
         void* context,
         enrage_tick_callback callback,
         void* user_data);
