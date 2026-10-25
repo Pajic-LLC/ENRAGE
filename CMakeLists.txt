@@ -103,6 +103,7 @@ if(ENRAGE_BUILD_TESTS)
 
     add_library(enrage_worker_plugin MODULE tests/worker_plugin.cpp)
     target_link_libraries(enrage_worker_plugin PRIVATE enrage_sdk Threads::Threads)
+    target_compile_features(enrage_worker_plugin PRIVATE cxx_std_23)
     set_target_properties(enrage_worker_plugin PROPERTIES PREFIX "")
 
     add_executable(enrage_crash_probe tests/crash_probe.cpp)
