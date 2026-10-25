@@ -33,6 +33,7 @@ add_library(enrage_core STATIC
     src/platform/signature/resolver.cpp
     src/adapters/lab_adapter.cpp
     src/adapters/null_adapter.cpp
+    src/adapters/profile_adapter.cpp
     src/adapters/profile_runtime.cpp
     src/adapters/signature_health.cpp
 )
@@ -128,6 +129,11 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_profile_v3_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_profile_v3_tests)
 
+    add_executable(enrage_profile_adapter_tests tests/profile_adapter_tests.cpp)
+    target_include_directories(enrage_profile_adapter_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_profile_adapter_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_profile_adapter_tests)
+
     add_executable(enrage_recovery_tests tests/recovery_tests.cpp)
     target_include_directories(enrage_recovery_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_recovery_tests PRIVATE enrage_core)
@@ -195,6 +201,7 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_overlay_tests COMMAND enrage_overlay_tests)
     add_test(NAME enrage_build_profile_tests COMMAND enrage_build_profile_tests)
     add_test(NAME enrage_profile_v3_tests COMMAND enrage_profile_v3_tests)
+    add_test(NAME enrage_profile_adapter_tests COMMAND enrage_profile_adapter_tests)
     add_test(NAME enrage_recovery_tests COMMAND enrage_recovery_tests)
     add_test(NAME enrage_recovery_compat_tests COMMAND enrage_recovery_compat_tests)
     add_test(NAME enrage_inspection_tests COMMAND enrage_inspection_tests)
