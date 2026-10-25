@@ -81,28 +81,62 @@ bool PluginHost::load(const std::filesystem::path& path, std::string_view owner_
     return true;
 }
 
+bool PluginHost::unload(std::string_view plugin_id) noexcept {
+    const auto found = std::ranges::find(plugins_, plugin_id, &LoadedPlugin::id);
+    if (found == plugins_.end()) return false;
+    return unload_index(static_cast<std::size_t>(std::distance(plugins_.begin(), found)));
+}
+
+std::size_t PluginHost::unload_mod(std::string_view owner_mod_id) noexcept {
+    std::size_t unloaded{};
+    for (std::size_t index = plugins_.size(); index > 0; --index) {
+        if (plugins_[index - 1].owner_mod_id != owner_mod_id) continue;
+        (void)unload_index(index - 1);
+        ++unloaded;
+    }
+    return unloaded;
+}
+
 void PluginHost::unload_all() noexcept {
-    for (auto it = plugins_.rbegin(); it != plugins_.rend(); ++it) {
-        if (!it->descriptor || !it->descriptor->unload) {
-            continue;
-        }
+    while (!plugins_.empty()) {
+        (void)unload_index(plugins_.size() - 1);
+    }
+    tick_callbacks_.clear();
+}
 
+bool PluginHost::unload_index(std::size_t index) noexcept {
+    if (index >= plugins_.size()) return false;
+
+    auto& plugin = plugins_[index];
+    bool callback_ok = true;
+
+    if (plugin.descriptor && plugin.descriptor->unload) {
         bool execute = true;
-        if (execution_begin_ && !it->owner_mod_id.empty()) {
-            execute = execution_begin_(it->owner_mod_id, it->id, "unload");
-        }
-        if (!execute) {
-            continue;
+        if (execution_begin_ && !plugin.owner_mod_id.empty()) {
+            execute = execution_begin_(plugin.owner_mod_id, plugin.id, "unload");
         }
 
-        it->descriptor->unload();
-        if (execution_end_ && !it->owner_mod_id.empty()) {
-            (void)execution_end_();
+        if (execute) {
+            plugin.descriptor->unload();
+            if (execution_end_ && !plugin.owner_mod_id.empty()) {
+                callback_ok = execution_end_();
+            }
+        } else {
+            callback_ok = false;
         }
     }
 
-    tick_callbacks_.clear();
-    plugins_.clear();
+    const auto owner = plugin.owner_mod_id;
+    const auto id = plugin.id;
+    remove_callbacks(owner, id);
+    plugins_.erase(plugins_.begin() + static_cast<std::ptrdiff_t>(index));
+    return callback_ok;
+}
+
+void PluginHost::remove_callbacks(std::string_view owner_mod_id, std::string_view plugin_id) noexcept {
+    std::erase_if(tick_callbacks_, [&](const TickRegistration& registration) {
+        return registration.owner_mod_id == owner_mod_id && registration.plugin_id == plugin_id;
+    });
 }
 
 bool PluginHost::tick(double delta_seconds) {
@@ -147,18 +181,18 @@ std::size_t PluginHost::tick_callback_count() const noexcept {
     return tick_callbacks_.size();
 }
 
-void PluginHost::log_thunk(void*, uint32_t level, const char* message) {
+void ENRAGE_CALL PluginHost::log_thunk(void*, uint32_t level, const char* message) {
     std::clog << "[ENRAGE:" << level << "] " << (message ? message : "") << '\n';
 }
 
-enrage_capability_bits PluginHost::capabilities_thunk(void* context) {
+enrage_capability_bits ENRAGE_CALL PluginHost::capabilities_thunk(void* context) {
     if (!context) {
         return ENRAGE_CAPABILITY_NONE;
     }
     return static_cast<PluginHost*>(context)->capabilities_;
 }
 
-enrage_result PluginHost::register_tick_thunk(
+enrage_result ENRAGE_CALL PluginHost::register_tick_thunk(
     void* context,
     enrage_tick_callback callback,
     void* user_data) {
@@ -168,6 +202,11 @@ enrage_result PluginHost::register_tick_thunk(
 
     auto* host = static_cast<PluginHost*>(context);
     if ((host->capabilities_ & ENRAGE_CAPABILITY_TICK) == 0) {
+        return ENRAGE_UNSUPPORTED;
+    }
+    if (host->registering_plugin_id_.empty()) {
+        // ABI v1 registrations are owned by the plugin being loaded. Reject
+        // late registrations because they cannot be attributed safely.
         return ENRAGE_UNSUPPORTED;
     }
 
