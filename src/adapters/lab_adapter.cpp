@@ -24,7 +24,7 @@ BuildIdentity LabAdapter::build() const {
 }
 
 std::uint64_t LabAdapter::capabilities() const noexcept {
-    return state_->capability_bits;
+    return state_->capability_map.resolve(state_->capability_bits);
 }
 
 EnvironmentState LabAdapter::environment_state() const noexcept {
