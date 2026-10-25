@@ -37,12 +37,8 @@ std::string conflict_message(const OverlayConflict& conflict) {
 
 std::string recovery_message(const RecoveryBreadcrumb& breadcrumb) {
     std::string message = "previous session ended while this mod was executing";
-    if (!breadcrumb.plugin_id.empty()) {
-        message += " plugin " + breadcrumb.plugin_id;
-    }
-    if (!breadcrumb.callback.empty()) {
-        message += " callback " + breadcrumb.callback;
-    }
+    if (!breadcrumb.plugin_id.empty()) message += " plugin " + breadcrumb.plugin_id;
+    if (!breadcrumb.callback.empty()) message += " callback " + breadcrumb.callback;
     message += "; it has been quarantined";
     return message;
 }
@@ -117,9 +113,7 @@ std::string capability_message(const adapters::CapabilityHealth& capability) {
     }
     if (!capability.available) {
         message += " is suppressed";
-        if (!capability.blocking_anchors.empty()) {
-            message += " by " + join_names(capability.blocking_anchors);
-        }
+        if (!capability.blocking_anchors.empty()) message += " by " + join_names(capability.blocking_anchors);
         return message;
     }
     if (!capability.degraded_anchors.empty()) {
@@ -140,18 +134,17 @@ Runtime::Runtime(std::unique_ptr<adapters::Adapter> adapter, std::filesystem::pa
     plugins_.set_execution_observer(
         [this](std::string_view mod_id, std::string_view plugin_id, std::string_view callback) {
             const bool ok = recovery_.enter_execution(mod_id, plugin_id, callback);
-            if (!ok) {
-                report_recovery_state_error("could not persist native execution recovery marker");
-            }
+            if (!ok) report_recovery_state_error("could not persist native execution recovery marker");
             return ok;
         },
         [this]() {
             const bool ok = recovery_.leave_execution();
-            if (!ok) {
-                report_recovery_state_error("could not clear native execution recovery marker");
-            }
+            if (!ok) report_recovery_state_error("could not clear native execution recovery marker");
             return ok;
         });
+    plugins_.set_virtual_file_reader([this](std::string_view logical_path) {
+        return overlay_.read(std::filesystem::path{std::string{logical_path}});
+    });
 }
 
 Runtime::~Runtime() {
@@ -159,13 +152,8 @@ Runtime::~Runtime() {
 }
 
 bool Runtime::start(bool force_safe_mode) {
-    if (running_ || !adapter_ || !adapter_->probe()) {
-        return false;
-    }
-
-    if (!recovery_.begin_session(force_safe_mode)) {
-        return false;
-    }
+    if (running_ || !adapter_ || !adapter_->probe()) return false;
+    if (!recovery_.begin_session(force_safe_mode)) return false;
 
     if (!adapter_->initialize()) {
         recovery_.end_session();
@@ -262,10 +250,7 @@ bool Runtime::start(bool force_safe_mode) {
 }
 
 void Runtime::stop() noexcept {
-    if (!running_) {
-        return;
-    }
-
+    if (!running_) return;
     deactivate_extensions();
     adapter_->shutdown();
     recovery_.end_session();
@@ -284,9 +269,7 @@ void Runtime::tick(double delta_seconds) {
         sync_capabilities();
         sync_health();
         if (!extensions_active_) activate_extensions();
-        if (extensions_active_ && !plugins_.tick(delta_seconds)) {
-            deactivate_extensions();
-        }
+        if (extensions_active_ && !plugins_.tick(delta_seconds)) deactivate_extensions();
         return;
     }
 
@@ -300,87 +283,38 @@ bool Runtime::reload_support() {
     if (was_active) deactivate_extensions();
 
     if (!adapter_->reload_support()) {
-        if (was_active && adapter_->environment_state() == adapters::EnvironmentState::local) {
-            activate_extensions();
-        }
+        if (was_active && adapter_->environment_state() == adapters::EnvironmentState::local) activate_extensions();
         return false;
     }
 
     sync_capabilities();
     sync_health();
 
-    if (adapter_->environment_state() == adapters::EnvironmentState::local) {
-        activate_extensions();
-    }
+    if (adapter_->environment_state() == adapters::EnvironmentState::local) activate_extensions();
     return true;
 }
 
-bool Runtime::running() const noexcept {
-    return running_;
-}
+bool Runtime::running() const noexcept { return running_; }
+bool Runtime::extensions_active() const noexcept { return extensions_active_; }
+bool Runtime::safe_mode() const noexcept { return recovery_.safe_mode(); }
+std::uint64_t Runtime::capabilities() const noexcept { return capabilities_; }
+const adapters::AdapterHealthSnapshot& Runtime::health() const noexcept { return health_; }
+const ModRegistry& Runtime::mods() const noexcept { return mods_; }
+const std::vector<LoadedMod>& Runtime::loaded_mods() const noexcept { return loaded_mods_; }
+const std::vector<Diagnostic>& Runtime::diagnostics() const noexcept { return diagnostics_; }
+const Overlay& Runtime::overlay() const noexcept { return overlay_; }
+const PluginHost& Runtime::plugins() const noexcept { return plugins_; }
+const std::vector<std::string>& Runtime::quarantined_mods() const noexcept { return recovery_.quarantined_mods(); }
+const std::optional<RecoveryBreadcrumb>& Runtime::suspected_execution() const noexcept { return recovery_.suspected_execution(); }
+const adapters::Adapter& Runtime::adapter() const noexcept { return *adapter_; }
 
-bool Runtime::extensions_active() const noexcept {
-    return extensions_active_;
-}
-
-bool Runtime::safe_mode() const noexcept {
-    return recovery_.safe_mode();
-}
-
-std::uint64_t Runtime::capabilities() const noexcept {
-    return capabilities_;
-}
-
-const adapters::AdapterHealthSnapshot& Runtime::health() const noexcept {
-    return health_;
-}
-
-const ModRegistry& Runtime::mods() const noexcept {
-    return mods_;
-}
-
-const std::vector<LoadedMod>& Runtime::loaded_mods() const noexcept {
-    return loaded_mods_;
-}
-
-const std::vector<Diagnostic>& Runtime::diagnostics() const noexcept {
-    return diagnostics_;
-}
-
-const Overlay& Runtime::overlay() const noexcept {
-    return overlay_;
-}
-
-const PluginHost& Runtime::plugins() const noexcept {
-    return plugins_;
-}
-
-const std::vector<std::string>& Runtime::quarantined_mods() const noexcept {
-    return recovery_.quarantined_mods();
-}
-
-const std::optional<RecoveryBreadcrumb>& Runtime::suspected_execution() const noexcept {
-    return recovery_.suspected_execution();
-}
-
-const adapters::Adapter& Runtime::adapter() const noexcept {
-    return *adapter_;
-}
-
-bool Runtime::clear_quarantine(std::string_view mod_id) {
-    return recovery_.clear_quarantine(mod_id);
-}
-
-bool Runtime::clear_all_quarantine() {
-    return recovery_.clear_all_quarantine();
-}
+bool Runtime::clear_quarantine(std::string_view mod_id) { return recovery_.clear_quarantine(mod_id); }
+bool Runtime::clear_all_quarantine() { return recovery_.clear_all_quarantine(); }
 
 void Runtime::activate_extensions() {
     if (extensions_active_ || !package_set_valid_ || recovery_.safe_mode()) return;
 
-    if ((capabilities_ & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0) {
-        mount_content();
-    }
+    if ((capabilities_ & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0) mount_content();
 
     for (const auto& id : load_order_) {
         const auto found = std::ranges::find(loaded_mods_, id, [](const LoadedMod& mod) {
@@ -389,8 +323,7 @@ void Runtime::activate_extensions() {
         if (found == loaded_mods_.end()) continue;
 
         for (const auto& plugin : found->native_plugins) {
-            const bool loaded = plugins_.load(plugin, id);
-            if (!loaded) {
+            if (!plugins_.load(plugin, id)) {
                 diagnostics_.push_back({
                     DiagnosticSeverity::error,
                     DiagnosticCode::plugin_load_failed,
@@ -461,11 +394,8 @@ void Runtime::sync_capabilities() {
 
     const bool had_virtual_files = (previous & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0;
     const bool has_virtual_files = (capabilities_ & ENRAGE_CAPABILITY_VIRTUAL_FILES) != 0;
-    if (had_virtual_files && !has_virtual_files) {
-        overlay_.clear();
-    } else if (!had_virtual_files && has_virtual_files) {
-        mount_content();
-    }
+    if (had_virtual_files && !has_virtual_files) overlay_.clear();
+    else if (!had_virtual_files && has_virtual_files) mount_content();
 }
 
 void Runtime::sync_health(bool initial) {
@@ -473,9 +403,7 @@ void Runtime::sync_health(bool initial) {
 
     for (const auto& anchor : next.anchors) {
         const auto* previous = find_anchor(health_, anchor.name);
-        const bool changed = !previous ||
-                             previous->state != anchor.state ||
-                             previous->reason != anchor.reason;
+        const bool changed = !previous || previous->state != anchor.state || previous->reason != anchor.reason;
         if (!changed) continue;
         if (initial && anchor.state == adapters::AnchorHealthState::resolved) continue;
 
