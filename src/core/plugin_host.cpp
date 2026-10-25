@@ -6,12 +6,14 @@
 #include <cstddef>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <utility>
 
 namespace enrage::core {
 namespace {
 
 std::atomic_uint64_t shadow_sequence{};
+constexpr std::size_t max_reload_state_bytes = 16u * 1024u * 1024u;
 
 bool valid_descriptor(const enrage_plugin_descriptor* descriptor) {
     return descriptor &&
@@ -19,6 +21,31 @@ bool valid_descriptor(const enrage_plugin_descriptor* descriptor) {
            descriptor->struct_size >= ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE &&
            descriptor->id && descriptor->name && descriptor->version &&
            descriptor->load;
+}
+
+template <typename Callback>
+Callback descriptor_callback(
+    const enrage_plugin_descriptor* descriptor,
+    std::size_t offset) {
+    if (!descriptor || descriptor->struct_size < offset + sizeof(Callback)) return nullptr;
+    Callback callback{};
+    const auto* bytes = reinterpret_cast<const std::byte*>(descriptor);
+    std::memcpy(&callback, bytes + offset, sizeof(callback));
+    return callback;
+}
+
+enrage_plugin_save_state_callback save_state_callback(
+    const enrage_plugin_descriptor* descriptor) {
+    return descriptor_callback<enrage_plugin_save_state_callback>(
+        descriptor,
+        offsetof(enrage_plugin_descriptor, save_state));
+}
+
+enrage_plugin_restore_state_callback restore_state_callback(
+    const enrage_plugin_descriptor* descriptor) {
+    return descriptor_callback<enrage_plugin_restore_state_callback>(
+        descriptor,
+        offsetof(enrage_plugin_descriptor, restore_state));
 }
 
 } // namespace
@@ -178,6 +205,48 @@ bool PluginHost::reload(
         return false;
     }
 
+    const auto save_state = save_state_callback(found->descriptor);
+    const auto restore_state = restore_state_callback(prepared->descriptor);
+    const bool handoff_state = save_state && restore_state;
+    std::vector<std::byte> reload_state;
+
+    if (handoff_state) {
+        if (execution_begin_ && !found->owner_mod_id.empty() &&
+            !execution_begin_(found->owner_mod_id, found->id, "reload-save-state")) {
+            prepared->library.close();
+            cleanup_loaded_path(prepared->loaded_path);
+            return false;
+        }
+
+        std::size_t required_size{};
+        auto state_result = save_state(nullptr, 0, &required_size);
+        if ((state_result == ENRAGE_OK || state_result == ENRAGE_BUFFER_TOO_SMALL) &&
+            required_size <= max_reload_state_bytes) {
+            reload_state.resize(required_size);
+            if (required_size != 0) {
+                std::size_t written_size = required_size;
+                state_result = save_state(reload_state.data(), reload_state.size(), &written_size);
+                if (state_result == ENRAGE_OK && written_size <= reload_state.size()) {
+                    reload_state.resize(written_size);
+                } else {
+                    state_result = ENRAGE_INTERNAL_ERROR;
+                }
+            } else if (state_result == ENRAGE_BUFFER_TOO_SMALL) {
+                state_result = ENRAGE_INTERNAL_ERROR;
+            }
+        } else {
+            state_result = ENRAGE_INTERNAL_ERROR;
+        }
+
+        const bool state_recovery_cleared =
+            !execution_end_ || found->owner_mod_id.empty() || execution_end_();
+        if (state_result != ENRAGE_OK || !state_recovery_cleared) {
+            prepared->library.close();
+            cleanup_loaded_path(prepared->loaded_path);
+            return false;
+        }
+    }
+
     std::vector<TickRegistration> staged_callbacks;
     if (execution_begin_ && !found->owner_mod_id.empty() &&
         !execution_begin_(found->owner_mod_id, found->id, "reload-load")) {
@@ -203,6 +272,28 @@ bool PluginHost::reload(
         prepared->library.close();
         cleanup_loaded_path(prepared->loaded_path);
         return false;
+    }
+
+    if (handoff_state) {
+        if (execution_begin_ && !found->owner_mod_id.empty() &&
+            !execution_begin_(found->owner_mod_id, found->id, "reload-restore-state")) {
+            if (prepared->descriptor->unload) prepared->descriptor->unload();
+            prepared->library.close();
+            cleanup_loaded_path(prepared->loaded_path);
+            return false;
+        }
+
+        const auto restore_result = restore_state(
+            reload_state.empty() ? nullptr : reload_state.data(),
+            reload_state.size());
+        const bool restore_recovery_cleared =
+            !execution_end_ || found->owner_mod_id.empty() || execution_end_();
+        if (restore_result != ENRAGE_OK || !restore_recovery_cleared) {
+            if (prepared->descriptor->unload) prepared->descriptor->unload();
+            prepared->library.close();
+            cleanup_loaded_path(prepared->loaded_path);
+            return false;
+        }
     }
 
     auto& old = plugins_[index];
@@ -243,10 +334,6 @@ bool PluginHost::reload(
         std::make_move_iterator(staged_callbacks.end()));
     cleanup_loaded_path(old_loaded_path);
 
-    // If recovery bookkeeping could not be cleared after the old unload, the
-    // replacement is still the only valid live generation. The execution
-    // observer has already reported the persistence failure, so keep the new
-    // generation rather than pretending the rollback was possible.
     (void)old_recovery_cleared;
     return true;
 }
@@ -367,8 +454,6 @@ enrage_result ENRAGE_CALL PluginHost::register_tick_thunk(
     auto* host = static_cast<PluginHost*>(context);
     if ((host->capabilities_ & ENRAGE_CAPABILITY_TICK) == 0) return ENRAGE_UNSUPPORTED;
     if (host->registering_plugin_id_.empty()) {
-        // ABI v1 registrations are owned by the plugin being loaded. Reject
-        // late registrations because they cannot be attributed safely.
         return ENRAGE_UNSUPPORTED;
     }
 
