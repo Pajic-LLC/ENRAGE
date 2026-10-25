@@ -1,6 +1,7 @@
 #include "core/recovery.hpp"
 
 #include "core/plugin_host.hpp"
+#include "platform/atomic_file.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,7 +16,9 @@
 #include <utility>
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #else
 #include <csignal>
@@ -109,27 +112,7 @@ bool parse_u64(std::string_view text, std::uint64_t& value) {
 }
 
 bool atomic_write(const std::filesystem::path& path, std::string_view contents) {
-    std::error_code error;
-    std::filesystem::create_directories(path.parent_path(), error);
-    if (error) return false;
-
-    const auto temporary = path.string() + ".tmp";
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) return false;
-        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-        output.flush();
-        if (!output) return false;
-    }
-
-    std::filesystem::remove(path, error);
-    error.clear();
-    std::filesystem::rename(temporary, path, error);
-    if (error) {
-        std::filesystem::remove(temporary, error);
-        return false;
-    }
-    return true;
+    return platform::atomic_replace_file(path, contents);
 }
 
 struct SessionRecord {
