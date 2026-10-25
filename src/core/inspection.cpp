@@ -6,11 +6,11 @@
 #include "platform/scan_image.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
-#include <span>
 #include <vector>
 
 namespace enrage::core {
@@ -23,7 +23,8 @@ std::optional<std::vector<std::byte>> read_bytes(const std::filesystem::path& pa
     const auto end = input.tellg();
     if (end < 0) return std::nullopt;
     const auto size = static_cast<std::uint64_t>(end);
-    if (size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+    if (size > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) ||
+        size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
         return std::nullopt;
     }
 
@@ -67,29 +68,6 @@ std::string state_name(platform::signature::ResolutionState state) {
         case platform::signature::ResolutionState::ambiguous: return "ambiguous";
     }
     return "unknown_symbol";
-}
-
-void map_symbol_location(
-    InspectionSymbol& symbol,
-    const platform::PeImage& pe,
-    std::size_t file_offset) {
-    for (const auto& section : pe.sections()) {
-        const auto start = static_cast<std::uint64_t>(section.raw_offset);
-        const auto size = static_cast<std::uint64_t>(section.raw_size);
-        const auto offset = static_cast<std::uint64_t>(file_offset);
-        if (offset < start || offset - start >= size) continue;
-
-        const auto delta = offset - start;
-        const auto rva64 = static_cast<std::uint64_t>(section.virtual_address) + delta;
-        if (rva64 > std::numeric_limits<std::uint32_t>::max()) return;
-
-        symbol.section = section.name;
-        symbol.rva = static_cast<std::uint32_t>(rva64);
-        if (pe.image_base() <= std::numeric_limits<std::uint64_t>::max() - rva64) {
-            symbol.virtual_address = pe.image_base() + rva64;
-        }
-        return;
-    }
 }
 
 } // namespace
@@ -155,35 +133,23 @@ std::optional<InspectionReport> inspect_executable(
     if (!resolver) return report;
 
     report.symbols.reserve(profile->symbols.size());
-    const std::span<const std::byte> image_bytes{*bytes};
     for (const auto& spec : profile->symbols) {
         InspectionSymbol symbol;
         symbol.name = spec.name;
 
-        if (!spec.region.empty()) {
-            if (!scan_image) {
-                symbol.state = platform::signature::ResolutionState::not_found;
-                report.symbols.push_back(std::move(symbol));
-                continue;
-            }
-            const auto resolution = platform::resolve_in_image(*resolver, spec.name, *scan_image);
-            symbol.state = resolution.state;
-            symbol.match_count = resolution.match_count;
-            symbol.file_offset = resolution.storage_offset;
-            symbol.rva = resolution.rva;
-            symbol.virtual_address = resolution.virtual_address;
-            symbol.section = resolution.region;
+        if (!scan_image) {
+            symbol.state = platform::signature::ResolutionState::not_found;
             report.symbols.push_back(std::move(symbol));
             continue;
         }
 
-        const auto resolution = resolver->resolve(spec.name, image_bytes);
+        const auto resolution = platform::resolve_in_image(*resolver, spec.name, *scan_image);
         symbol.state = resolution.state;
         symbol.match_count = resolution.match_count;
-        symbol.file_offset = resolution.offset;
-        if (pe && resolution.offset) {
-            map_symbol_location(symbol, *pe, *resolution.offset);
-        }
+        symbol.file_offset = resolution.storage_offset;
+        symbol.rva = resolution.rva;
+        symbol.virtual_address = resolution.virtual_address;
+        symbol.section = resolution.region;
         report.symbols.push_back(std::move(symbol));
     }
 
