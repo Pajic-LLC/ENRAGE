@@ -31,6 +31,7 @@ add_library(enrage_core STATIC
     src/platform/scan_image.cpp
     src/platform/signature/pattern.cpp
     src/platform/signature/resolver.cpp
+    src/adapters/image_provider.cpp
     src/adapters/lab_adapter.cpp
     src/adapters/null_adapter.cpp
     src/adapters/profile_adapter.cpp
@@ -134,6 +135,16 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_profile_adapter_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_profile_adapter_tests)
 
+    add_executable(enrage_image_provider_tests tests/image_provider_tests.cpp)
+    target_include_directories(enrage_image_provider_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_image_provider_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_image_provider_tests)
+
+    add_executable(enrage_profile_reload_tests tests/profile_reload_tests.cpp)
+    target_include_directories(enrage_profile_reload_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_profile_reload_tests PRIVATE enrage_core)
+    enrage_keep_test_assertions(enrage_profile_reload_tests)
+
     add_executable(enrage_recovery_tests tests/recovery_tests.cpp)
     target_include_directories(enrage_recovery_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_recovery_tests PRIVATE enrage_core)
@@ -202,6 +213,8 @@ if(ENRAGE_BUILD_TESTS)
     add_test(NAME enrage_build_profile_tests COMMAND enrage_build_profile_tests)
     add_test(NAME enrage_profile_v3_tests COMMAND enrage_profile_v3_tests)
     add_test(NAME enrage_profile_adapter_tests COMMAND enrage_profile_adapter_tests)
+    add_test(NAME enrage_image_provider_tests COMMAND enrage_image_provider_tests)
+    add_test(NAME enrage_profile_reload_tests COMMAND enrage_profile_reload_tests)
     add_test(NAME enrage_recovery_tests COMMAND enrage_recovery_tests)
     add_test(NAME enrage_recovery_compat_tests COMMAND enrage_recovery_compat_tests)
     add_test(NAME enrage_inspection_tests COMMAND enrage_inspection_tests)
