@@ -27,7 +27,15 @@ DynamicLibrary& DynamicLibrary::operator=(DynamicLibrary&& other) noexcept {
 bool DynamicLibrary::open(const std::filesystem::path& path) {
     close();
 #if defined(_WIN32)
+    // Invalid or incompatible native modules must fail as data, never as a
+    // blocking system error dialog. This matters for transactional plugin
+    // validation where a bad replacement is an expected recoverable input.
+    const DWORD previous_error_mode = GetThreadErrorMode();
+    SetThreadErrorMode(
+        previous_error_mode | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX,
+        nullptr);
     handle_ = static_cast<void*>(LoadLibraryW(path.c_str()));
+    SetThreadErrorMode(previous_error_mode, nullptr);
 #else
     handle_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
 #endif
