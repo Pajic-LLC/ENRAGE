@@ -17,9 +17,12 @@ enrage_result load(const enrage_host_api* host) {
 
 void unload() {}
 
+// Intentionally advertises only the original descriptor prefix even though it
+// is compiled against the current header. This guards binary compatibility for
+// plugins built before the optional state-handoff tail existed.
 const enrage_plugin_descriptor descriptor{
     ENRAGE_ABI_VERSION,
-    static_cast<uint32_t>(sizeof(enrage_plugin_descriptor)),
+    ENRAGE_PLUGIN_DESCRIPTOR_V1_SIZE,
     "dev.enrage.fault",
     "ENRAGE Fault Fixture",
     "1.0.0",
