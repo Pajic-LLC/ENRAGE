@@ -113,6 +113,11 @@ if(ENRAGE_BUILD_TESTS)
     target_link_libraries(enrage_tests PRIVATE enrage_core)
     enrage_keep_test_assertions(enrage_tests)
 
+    add_executable(enrage_archive_integrity_tests tests/archive_integrity_tests.cpp)
+    target_include_directories(enrage_archive_integrity_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(enrage_archive_integrity_tests PRIVATE enrage_core Threads::Threads)
+    enrage_keep_test_assertions(enrage_archive_integrity_tests)
+
     add_executable(enrage_vfs_integration_tests tests/vfs_integration_tests.cpp)
     target_include_directories(enrage_vfs_integration_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(enrage_vfs_integration_tests PRIVATE enrage_core)
@@ -230,6 +235,7 @@ if(ENRAGE_BUILD_TESTS)
 
     add_test(NAME enrage_sdk_c_tests COMMAND enrage_sdk_c_tests)
     add_test(NAME enrage_tests COMMAND enrage_tests $<TARGET_FILE:enrage_test_plugin>)
+    add_test(NAME enrage_archive_integrity_tests COMMAND enrage_archive_integrity_tests)
     add_test(NAME enrage_vfs_integration_tests
         COMMAND enrage_vfs_integration_tests $<TARGET_FILE:enrage_vfs_probe_plugin>)
     add_test(NAME enrage_mod_reload_tests
@@ -267,6 +273,7 @@ if(ENRAGE_BUILD_TESTS)
     set(enrage_regression_tests
         enrage_sdk_c_tests
         enrage_tests
+        enrage_archive_integrity_tests
         enrage_vfs_integration_tests
         enrage_mod_reload_tests
         enrage_fingerprint_tests
